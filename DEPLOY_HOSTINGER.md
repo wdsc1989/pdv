@@ -1,6 +1,41 @@
 # Deploy do PDV na Hostinger (pdv.srv1140258.hstgr.cloud)
 
+Repositório: **https://github.com/wdsc1989/pdv**
+
 Este guia descreve como colocar o PDV em produção na Hostinger, no subdomínio **pdv.srv1140258.hstgr.cloud** (no mesmo servidor em que você já tem, por exemplo, **n8n.srv1140258.hstgr.cloud**).
+
+---
+
+## Roteiro rápido (comandos em sequência no servidor)
+
+Conectado por SSH no servidor, execute na ordem (ajuste `USUARIO` pelo seu usuário Linux na Hostinger, ex.: `u123456789`):
+
+```bash
+# 1) Clonar o repositório
+cd ~
+git clone https://github.com/wdsc1989/pdv.git
+cd pdv
+
+# 2) Ambiente virtual e dependências
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 3) Criar .env (edite com seus dados de banco)
+cat > .env << 'EOF'
+DATABASE_URL=postgresql://USUARIO:SENHA@localhost:5432/pdv_db
+EOF
+# Ou deixe vazio para usar SQLite: touch .env
+
+# 4) Inicializar banco e criar admin
+python init_db.py
+
+# 5) Testar (Ctrl+C para parar)
+streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+Depois configure o **Nginx** (seção 8) e, se quiser, o **systemd** (seção 9) para manter o app rodando.
 
 ---
 
@@ -47,7 +82,7 @@ Se você enviar o repositório para GitHub/GitLab:
 ```bash
 cd ~
 # ou cd para a pasta onde ficam seus projetos, ex.: ~/domains/srv1140258.hstgr.cloud
-git clone https://github.com/SEU_USUARIO/pdv.git
+git clone https://github.com/wdsc1989/pdv.git
 cd pdv
 ```
 
