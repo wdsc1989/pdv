@@ -105,7 +105,7 @@ try:
                 "Código": p.codigo,
                 "Nome": p.nome,
                 "Categoria": p.categoria or "",
-                "Marca": p.marca or "",
+                "Fornecedor": p.marca or "",
                 "Estoque": estoque,
                 "Estoque mín.": estoque_min,
                 "Preço venda": format_currency(venda),

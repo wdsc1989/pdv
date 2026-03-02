@@ -21,17 +21,6 @@ from utils.navigation import show_sidebar
 st.set_page_config(page_title="Vendas", page_icon="🧾", layout="wide")
 
 
-def _reset_cart_inputs(produtos):
-    """
-    Zera todos os campos de quantidade dos produtos no estado da página.
-    Isso evita que o carrinho seja recriado automaticamente após limpar.
-    """
-    for p in produtos:
-        key = f"qty_input_{p.id}"
-        if key in st.session_state:
-            st.session_state[key] = 0
-
-
 AuthService.require_roles(["admin", "gerente", "vendedor"])
 show_sidebar()
 
@@ -45,7 +34,7 @@ try:
         db.query(CashSession).filter(CashSession.status == "aberta").first()
     )
     if not sessao_aberta:
-        st.error("Não há caixa aberto. Peça ao gerente ou admin para abrir o caixa em **Caixa**.")
+        st.error("Não há caixa aberto. Abra o caixa em **Caixa** para liberar vendas.")
         st.stop()
 
     produtos = (
@@ -78,7 +67,7 @@ try:
     with col_titulo:
         st.markdown(
             "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>🧾 Vendas (PDV)</strong></p>"
-            "<p style='margin:0; font-size:0.8rem; color:#666;'>Adicione os produtos ao carrinho e finalize a venda. Caixa precisa estar aberto.</p>",
+            "<p style='margin:0; font-size:0.8rem; color:#666;'>Adicione os produtos à sacola e finalize a venda. Caixa precisa estar aberto.</p>",
             unsafe_allow_html=True,
         )
     with col_total:
@@ -109,159 +98,31 @@ try:
     if "cart_items" not in st.session_state:
         st.session_state.cart_items = []
 
-    # Reset dos campos de quantidade deve ocorrer ANTES de qualquer number_input ser criado.
     if st.session_state.get("need_reset_qty_inputs"):
-        _reset_cart_inputs(produtos)
         st.session_state.pop("need_reset_qty_inputs", None)
         st.rerun()
 
     cart = st.session_state.cart_items
     n_itens = sum(int(item["quantidade"]) for item in cart)
     if n_itens > 0:
-        st.markdown(f"**Itens no carrinho:** {n_itens} peça(s)")
+        st.markdown(f"**Itens na sacola:** {n_itens} peça(s)")
         st.markdown("---")
 
     col_prod, col_cart = st.columns([1, 2])
 
-    # Passo 1: seleção visual de produto (grid paginado com miniaturas e + / -)
+    # Passo 1: botão para abrir página de busca de produtos
     with col_prod:
         st.subheader("Passo 1: Selecionar produto")
-        st.caption("Busque pelo nome, código, categoria ou marca e ajuste a quantidade direto no card.")
+        st.caption("Clique em **Buscar produto** para abrir o catálogo, escolher os itens e voltar com a sacola preenchida.")
 
-        termo = st.text_input(
-            "Buscar produto",
-            placeholder="Ex: vestido, 001, jeans, blusa...",
-        ).strip()
-
-        termo_lower = termo.lower()
-        if termo_lower:
-            produtos_filtrados = [
-                p
-                for p in produtos
-                if termo_lower in (p.nome or "").lower()
-                or termo_lower in (p.codigo or "").lower()
-                or termo_lower in (p.categoria or "").lower()
-                or termo_lower in (p.marca or "").lower()
-            ]
-        else:
-            produtos_filtrados = produtos
-
-        if not produtos_filtrados:
-            st.info("Nenhum produto encontrado para este filtro.")
-        else:
-            PAGE_SIZE = 1
-            total = len(produtos_filtrados)
-            total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
-
-            if "prod_page" not in st.session_state:
-                st.session_state.prod_page = 0
-
-            page = max(0, min(st.session_state.prod_page, total_pages - 1))
-            st.session_state.prod_page = page
-
-            # Navegação de páginas acima do grid
-            if total_pages > 1:
-                c_prev, c_info, c_next = st.columns([1, 2, 1])
-                with c_prev:
-                    if st.button("◀", key="prod_prev", disabled=page == 0):
-                        st.session_state.prod_page = max(0, page - 1)
-                        st.rerun()
-                with c_info:
-                    st.caption(f"Página {page + 1} de {total_pages}")
-                with c_next:
-                    if st.button("▶", key="prod_next", disabled=page >= total_pages - 1):
-                        st.session_state.prod_page = min(total_pages - 1, page + 1)
-                        st.rerun()
-
-            start = page * PAGE_SIZE
-            end = min(start + PAGE_SIZE, total)
-            subset = produtos_filtrados[start:end]
-
-            uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
-            cols = st.columns(2)
-
-            for idx, p in enumerate(subset):
-                with cols[idx % 2]:
-                    # Card visual com imagem/placeholder
-                    img_path = None
-                    if p.imagem_path:
-                        candidate = uploads_dir / p.imagem_path
-                        if candidate.exists():
-                            img_path = candidate
-
-                    if img_path:
-                        st.image(str(img_path), width=110)
-                    else:
-                        st.markdown(
-                            "<div style='width:110px;height:90px;background:#eee;"
-                            "border-radius:4px;display:flex;align-items:center;"
-                            "justify-content:center;font-size:11px;color:#999;'>"
-                            "Sem imagem</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    st.markdown(f"**{p.codigo}**")
-                    nome_safe = (p.nome or "").replace("<", "&lt;").replace(">", "&gt;")
-                    st.markdown(
-                        f"<p style='font-size:1.05rem; margin:0.25rem 0; line-height:1.3;'>{nome_safe}</p>",
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(
-                        f"<p style='font-size:1.2rem; font-weight:bold; margin:0.25rem 0;'>{format_currency(p.preco_venda)}</p>",
-                        unsafe_allow_html=True,
-                    )
-                    estoque = p.estoque_atual if p.estoque_atual is not None else 0
-                    estoque_str = f"{estoque:.0f}" if estoque == int(estoque) else f"{estoque:.2f}"
-                    st.caption(f"Estoque: {estoque_str}")
-
-                    # Quantidade atual deste produto no carrinho
-                    qtd_atual = sum(
-                        int(item["quantidade"])
-                        for item in cart
-                        if item["product_id"] == p.id
-                    )
-
-                    nova_qtd = st.number_input(
-                        "Qtde",
-                        min_value=0,
-                        value=int(qtd_atual),
-                        step=1,
-                        key=f"qty_input_{p.id}",
-                    )
-
-                    if int(nova_qtd) != qtd_atual:
-                        novo_cart = list(cart)
-                        if nova_qtd <= 0:
-                            # Remove produto do carrinho
-                            novo_cart = [
-                                item
-                                for item in novo_cart
-                                if item["product_id"] != p.id
-                            ]
-                        else:
-                            for item in novo_cart:
-                                if item["product_id"] == p.id:
-                                    item["quantidade"] = int(nova_qtd)
-                                    break
-                            else:
-                                novo_cart.append(
-                                    {
-                                        "product_id": p.id,
-                                        "codigo": p.codigo,
-                                        "nome": p.nome,
-                                        "quantidade": int(nova_qtd),
-                                        "preco_venda": p.preco_venda,
-                                        "preco_custo": p.preco_custo,
-                                    }
-                                )
-                        st.session_state.cart_items = novo_cart
-                        st.rerun()
+        if st.button("🔍 Buscar produto", type="primary", use_container_width=True, key="btn_buscar_produto"):
+            st.switch_page("pages/4a_Selecionar_Produtos.py")
 
     with col_cart:
-        st.subheader("Passo 2: Carrinho e finalizar")
+        st.subheader("Passo 2: Sacola e finalizar")
         cart = st.session_state.cart_items
         if not cart:
-            st.info("Nenhum item no carrinho. Adicione produtos na coluna à esquerda.")
+            st.info("Nenhum item na sacola. Adicione produtos na coluna à esquerda.")
         else:
             linhas = []
             total_vendido = 0.0
@@ -310,11 +171,11 @@ try:
                     "Imprimir extrato não fiscal", value=True
                 )
 
-            # Confirmação antes de finalizar: carrinho é limpo imediatamente após confirmar
+            # Confirmação antes de finalizar: sacola é limpa imediatamente após confirmar
             if st.session_state.get("confirmar_venda") is True:
                 st.warning(
                     f"Confirmar venda de **{format_currency(total_vendido)}**? "
-                    "O carrinho será esvaziado após a confirmação."
+                    "A sacola será esvaziada após a confirmação."
                 )
                 col_ok, col_cancel = st.columns(2)
                 with col_ok:
@@ -352,7 +213,7 @@ try:
                         st.session_state.cart_items = []
                         st.session_state.pop("confirmar_venda", None)
                         st.session_state.need_reset_qty_inputs = True
-                        st.success(f"Venda registrada. Total: {format_currency(total_vendido)}. Carrinho esvaziado.")
+                        st.success(f"Venda registrada. Total: {format_currency(total_vendido)}. Sacola esvaziada.")
                         if imprimir_extrato:
                             st.session_state.print_receipt_sale_id = venda.id
                             st.switch_page("pages/9_Recibo_Impressao.py")
@@ -369,7 +230,7 @@ try:
                         st.session_state.confirmar_venda = True
                         st.rerun()
                 with col_btn2:
-                    if st.button("Limpar carrinho", use_container_width=True):
+                    if st.button("Limpar sacola", use_container_width=True):
                         st.session_state.cart_items = []
                         st.session_state.need_reset_qty_inputs = True
                         st.rerun()

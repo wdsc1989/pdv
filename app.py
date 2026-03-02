@@ -133,7 +133,7 @@ def home_page():
     st.markdown("#### 📦 Produtos")
     st.markdown(
         "- **Lista de produtos**: busque por código ou nome, filtre por categoria e status; selecione um produto e use **Abrir para edição**.\n"
-        "- **Cadastrar ou editar**: grid de cards (como em Vendas) com busca por nome, código, categoria ou marca; clique em **Editar** no card e preencha o formulário abaixo. **Novo produto** para cadastrar.\n"
+        "- **Cadastrar ou editar**: grid de cards (como em Vendas) com busca por nome, código, categoria ou fornecedor; clique em **Editar** no card e preencha o formulário abaixo. **Novo produto** para cadastrar.\n"
         "- **Entrada de estoque**: ao editar um produto, registre entradas (quantidade e observação); o histórico aparece em Relatórios por período.\n"
         "- **Categorias**: na aba Categorias, visualize todas, busque por nome ou descrição, filtre por ativas/inativas; cadastre ou edite e desative quando necessário."
     )
@@ -143,7 +143,7 @@ def home_page():
 
     st.markdown("#### 🧾 Vendas (PDV)")
     st.markdown(
-        "Grid de produtos com busca (nome, código, categoria, marca), paginação e quantidade no card. Carrinho à direita com totais. "
+        "Grid de produtos com busca (nome, código, categoria, fornecedor), paginação e quantidade no card. Sacola à direita com totais. "
         "Ao finalizar, marque **Imprimir extrato não fiscal** para abrir uma página de impressão do recibo para o cliente (layout configurável em Administração)."
     )
 

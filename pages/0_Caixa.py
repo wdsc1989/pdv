@@ -61,7 +61,7 @@ try:
     with col1:
         st.subheader("1. Abrir caixa")
         st.caption("Defina o valor de troco inicial (ex.: dinheiro na gaveta).")
-        if role in ("admin", "gerente"):
+        if role in ("admin", "gerente", "vendedor"):
             if sessao_aberta:
                 st.info(
                     f"Já existe uma sessão aberta desde "
@@ -96,7 +96,7 @@ try:
     with col2:
         st.subheader("2. Fechar caixa")
         st.caption("Ao encerrar o expediente, informe o valor contado no caixa e feche a sessão.")
-        if role in ("admin", "gerente"):
+        if role in ("admin", "gerente", "vendedor"):
             if not sessao_aberta:
                 st.info("Não há caixa aberto no momento.")
             else:
@@ -127,7 +127,7 @@ try:
                     st.success("Caixa fechado com sucesso.")
                     st.rerun()
         else:
-            st.info("Fechamento de caixa disponível apenas para gerente/admin.")
+            st.info("Fechamento de caixa disponível para gerente, admin ou vendedor.")
 
     st.markdown("---")
     with st.expander("📋 Ver histórico de sessões de caixa"):

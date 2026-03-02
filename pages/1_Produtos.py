@@ -1,9 +1,12 @@
+import io
 import os
 import sys
 import time
 import unicodedata
 from pathlib import Path
 from datetime import date
+
+from PIL import Image
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -19,6 +22,26 @@ from models.stock_entry import StockEntry
 from services.auth_service import AuthService
 from utils.formatters import format_currency
 from utils.navigation import show_sidebar
+
+
+def _comprimir_imagem(img_bytes: bytes, max_tamanho: int = 800, qualidade: int = 82) -> bytes:
+    """
+    Comprime imagem para economia de espaço. Redimensiona e salva em JPEG.
+    Ideal para fotos de celular que costumam ser muito grandes.
+    """
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img = img.convert("RGB")
+        w, h = img.size
+        if w > max_tamanho or h > max_tamanho:
+            ratio = min(max_tamanho / w, max_tamanho / h)
+            new_w, new_h = int(w * ratio), int(h * ratio)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=qualidade, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return img_bytes
 
 
 st.set_page_config(page_title="Produtos", page_icon="📦", layout="wide")
@@ -175,7 +198,7 @@ try:
             )
 
             marca = st.text_input(
-                "Marca",
+                "Fornecedor",
                 value=produto_atual.marca or "" if produto_atual else "",
                 disabled=not can_edit,
                 key=f"cad_marca_{form_version}",
@@ -275,12 +298,22 @@ try:
             st.metric("Margem de lucro (%)", f"{margem:.2f}%")
 
         with st.expander("Imagem do produto (opcional)"):
-            imagem = st.file_uploader(
-                "Enviar imagem",
-                type=["png", "jpg", "jpeg", "webp"],
-                disabled=not can_edit,
-                key=f"cad_imagem_{form_version}",
-            )
+            st.caption("Tire uma foto pelo celular ou envie um arquivo. A imagem será compactada automaticamente.")
+            col_cam, col_upload = st.columns(2)
+            with col_cam:
+                foto_camera = st.camera_input(
+                    "Tirar foto",
+                    key=f"cad_camera_{form_version}",
+                    disabled=not can_edit,
+                )
+            with col_upload:
+                arquivo_upload = st.file_uploader(
+                    "Ou enviar arquivo",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    disabled=not can_edit,
+                    key=f"cad_imagem_{form_version}",
+                )
+            imagem = foto_camera if foto_camera else arquivo_upload
             if produto_atual and produto_atual.imagem_path:
                 uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
                 img_path = uploads_dir / produto_atual.imagem_path
@@ -359,8 +392,8 @@ try:
                         if existe_codigo:
                             st.error("Já existe um produto com este código.")
                         else:
-                            img_bytes = imagem.getvalue() if imagem else None
-                            img_name = imagem.name if imagem else None
+                            img_bytes = _comprimir_imagem(imagem.getvalue()) if imagem else None
+                            img_name = (getattr(imagem, "name", None) or "foto.jpg").rsplit(".", 1)[0] + ".jpg"
                             st.session_state.produto_draft = {
                                 "product_id": None,
                                 "codigo": codigo_final,
@@ -378,8 +411,8 @@ try:
                             }
                             st.rerun()
                     else:
-                        img_bytes = imagem.getvalue() if imagem else None
-                        img_name = imagem.name if imagem else None
+                        img_bytes = _comprimir_imagem(imagem.getvalue()) if imagem else None
+                        img_name = (imagem.name if imagem else "foto.jpg").rsplit(".", 1)[0] + ".jpg"
                         st.session_state.produto_draft = {
                             "product_id": produto_atual.id,
                             "codigo": codigo_final,
@@ -419,7 +452,7 @@ try:
                 ("Código", "codigo", lambda v: str(v) if v else "-"),
                 ("Nome", "nome", lambda v: str(v) if v else "-"),
                 ("Categoria", "categoria_nome", lambda v: str(v) if v else "(Sem categoria)"),
-                ("Marca", "marca", lambda v: str(v) if v else "-"),
+                ("Fornecedor", "marca", lambda v: str(v) if v else "-"),
                 ("Ativo", "ativo", lambda v: "Sim" if v else "Não"),
                 ("Preço de custo", "preco_custo", lambda v: format_currency(float(v)) if v is not None else "-"),
                 ("Preço de venda", "preco_venda", lambda v: format_currency(float(v)) if v is not None else "-"),
@@ -597,7 +630,7 @@ try:
                     "Código": p.codigo,
                     "Nome": p.nome,
                     "Categoria": p.categoria or "",
-                    "Marca": p.marca or "",
+                    "Fornecedor": p.marca or "",
                     "Estoque": estoque,
                     "Estoque mín.": estoque_min,
                     "Preço venda": format_currency(venda),
@@ -700,7 +733,7 @@ try:
                         "Código": p.codigo,
                         "Nome": p.nome,
                         "Categoria": p.categoria or "",
-                        "Marca": p.marca or "",
+                        "Fornecedor": p.marca or "",
                         "Preço custo": format_currency(p.preco_custo),
                         "Preço venda": format_currency(p.preco_venda),
                         "Valor de custo": format_currency(valor_custo),
