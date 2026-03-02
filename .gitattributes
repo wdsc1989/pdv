@@ -1,0 +1,2 @@
+# Scripts Bash devem usar LF no repo (evita erro $'\r' na VPS)
+*.sh text eol=lf

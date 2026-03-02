@@ -1,4 +1,5 @@
 import sys
+import os
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -129,6 +130,36 @@ try:
                     db.commit()
                     st.success("Signo atualizado.")
                     st.rerun()
+
+    # Seção de dados de teste só aparece quando habilitada explicitamente via variável de ambiente.
+    # Em produção, NÃO defina PDV_ENABLE_TEST_DATA=1 para evitar que scripts de seed sejam expostos.
+    if os.getenv("PDV_ENABLE_TEST_DATA") == "1":
+        st.markdown("---")
+        with st.expander("Dados de teste (produtos e vendas)"):
+            st.caption(
+                "Use para popular o sistema com produtos e vendas de exemplo. "
+                "Produtos de teste podem ser criados/atualizados sem afetar vendas. "
+                "Vendas de teste **substituem** todas as vendas e sessões de caixa atuais."
+            )
+            col_pp, col_vv = st.columns(2)
+            with col_pp:
+                if st.button("Criar/atualizar produtos de teste", key="seed_products_btn", use_container_width=True):
+                    try:
+                        from scripts.seed_products import main as seed_main
+                        seed_main()
+                        st.success("Produtos de teste criados ou atualizados.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao executar seed de produtos: {e}")
+            with col_vv:
+                if st.button("Criar vendas de teste (reseta vendas e caixa)", key="seed_sales_btn", use_container_width=True):
+                    try:
+                        from scripts.reset_and_seed_sales import main as seed_sales_main
+                        seed_sales_main()
+                        st.success("Vendas de teste criadas. Uma sessão de caixa aberta foi criada.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao executar seed de vendas: {e}")
 
     st.markdown("---")
     with st.expander("Logo do menu (sidebar)"):

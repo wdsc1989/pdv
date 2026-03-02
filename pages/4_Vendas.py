@@ -201,8 +201,18 @@ try:
                         )
 
                     st.markdown(f"**{p.codigo}**")
-                    st.caption(p.nome)
-                    st.caption(f"Preço: {format_currency(p.preco_venda)}")
+                    nome_safe = (p.nome or "").replace("<", "&lt;").replace(">", "&gt;")
+                    st.markdown(
+                        f"<p style='font-size:1.05rem; margin:0.25rem 0; line-height:1.3;'>{nome_safe}</p>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f"<p style='font-size:1.2rem; font-weight:bold; margin:0.25rem 0;'>{format_currency(p.preco_venda)}</p>",
+                        unsafe_allow_html=True,
+                    )
+                    estoque = p.estoque_atual if p.estoque_atual is not None else 0
+                    estoque_str = f"{estoque:.0f}" if estoque == int(estoque) else f"{estoque:.2f}"
+                    st.caption(f"Estoque: {estoque_str}")
 
                     # Quantidade atual deste produto no carrinho
                     qtd_atual = sum(

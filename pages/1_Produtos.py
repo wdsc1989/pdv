@@ -1,5 +1,7 @@
 import os
 import sys
+import time
+import unicodedata
 from pathlib import Path
 from datetime import date
 
@@ -60,96 +62,63 @@ try:
     edit_product_id = st.session_state.pop("edit_product_id", None)
     if "selected_product_id" not in st.session_state:
         st.session_state.selected_product_id = None
+
+    # Versão do formulário: ao incrementar, todos os widgets ganham novas keys
+    # e são recriados sem estado persistido (força limpeza após salvar)
+    if "form_version" not in st.session_state:
+        st.session_state.form_version = 0
+    form_version = st.session_state.form_version
+
     if edit_product_id is not None:
         st.session_state.selected_product_id = edit_product_id
 
     with tab_cadastro:
         st.subheader("Selecionar produto")
-        st.caption("Busque por nome, código, categoria ou marca. Clique em **Editar** no card para abrir o formulário abaixo.")
+        st.caption(
+            "Use a busca abaixo para escolher um produto para edição. "
+            "Ao selecionar um item, o formulário é carregado com os dados dele. "
+            "Para cadastrar um **novo produto**, escolha a opção **➕ Novo produto** na lista."
+        )
 
         produtos = db.execute(select(Product).order_by(Product.nome)).scalars().all()
-        col_busca, col_novo = st.columns([3, 1])
-        with col_busca:
-            busca_cadastro = st.text_input(
-                "Buscar produto",
-                placeholder="Ex: P0001, camiseta, jeans, infantil...",
-                key="busca_cadastro",
-            ).strip().lower()
-        with col_novo:
-            st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)  # alinha com o input
-            if st.button("➕ Novo produto", type="primary", use_container_width=True):
-                st.session_state.selected_product_id = None
-                st.rerun()
 
-        termo = busca_cadastro
-        if termo:
-            produtos_filtrados = [
-                p
-                for p in produtos
-                if termo in (p.codigo or "").lower()
-                or termo in (p.nome or "").lower()
-                or termo in (p.categoria or "").lower()
-                or termo in (p.marca or "").lower()
-            ]
+        # Selectbox com busca embutida (digite para filtrar na própria barra)
+        opcoes = [("novo", "➕ Novo produto")]
+        for p in produtos:
+            label = f"{p.codigo or ''} — {p.nome or ''}".strip(" —")
+            opcoes.append((p.id, label))
+
+        valores = [v for v, _ in opcoes]
+        labels = {v: lbl for v, lbl in opcoes}
+
+        # Controla o valor atual APENAS via selected_product_id
+        valor_atual = st.session_state.selected_product_id or "novo"
+        if valor_atual not in valores:
+            valor_atual = "novo"
+
+        escolha = st.selectbox(
+            "Buscar produto (digite para filtrar)",
+            options=valores,
+            index=valores.index(valor_atual),
+            format_func=lambda v: labels.get(v, "➕ Novo produto"),
+            key="select_produto_cadastro",
+        )
+
+        # Atualiza o produto selecionado a partir da busca
+        if escolha == "novo":
+            st.session_state.selected_product_id = None
         else:
-            produtos_filtrados = list(produtos)
+            st.session_state.selected_product_id = escolha
 
-        # Grid de cards (estilo página de vendas)
-        if not produtos_filtrados:
-            st.info("Nenhum produto encontrado. Use outro termo de busca ou clique em **Novo produto**.")
-        else:
-            PAGE_SIZE = 6
-            total = len(produtos_filtrados)
-            total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-            if "cadastro_prod_page" not in st.session_state:
-                st.session_state.cadastro_prod_page = 0
-            page = max(0, min(st.session_state.cadastro_prod_page, total_pages - 1))
-            st.session_state.cadastro_prod_page = page
-
-            if total_pages > 1:
-                c_prev, c_info, c_next = st.columns([1, 2, 1])
-                with c_prev:
-                    if st.button("◀ Anterior", key="cadastro_prev", disabled=page == 0):
-                        st.session_state.cadastro_prod_page = max(0, page - 1)
-                        st.rerun()
-                with c_info:
-                    st.caption(f"Página {page + 1} de {total_pages} — {total} produto(s)")
-                with c_next:
-                    if st.button("Próximo ▶", key="cadastro_next", disabled=page >= total_pages - 1):
-                        st.session_state.cadastro_prod_page = min(total_pages - 1, page + 1)
-                        st.rerun()
-
-            start = page * PAGE_SIZE
-            subset = produtos_filtrados[start : start + PAGE_SIZE]
-            uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
-            cols = st.columns(2)
-            for idx, p in enumerate(subset):
-                with cols[idx % 2]:
-                    selected = st.session_state.selected_product_id == p.id
-                    if selected:
-                        st.caption("✓ Selecionado para edição")
-                    container = st.container()
-                    with container:
-                        img_path = None
-                        if p.imagem_path:
-                            candidate = uploads_dir / p.imagem_path
-                            if candidate.exists():
-                                img_path = candidate
-                        if img_path:
-                            st.image(str(img_path), width=100)
-                        else:
-                            st.markdown(
-                                "<div style='width:100px;height:70px;background:#eee;border-radius:4px;"
-                                "display:flex;align-items:center;justify-content:center;font-size:10px;color:#999;'>"
-                                "Sem imagem</div>",
-                                unsafe_allow_html=True,
-                            )
-                        st.markdown(f"**{p.codigo}**")
-                        st.caption((p.nome or "")[:40] + ("..." if (p.nome or "") and len(p.nome or "") > 40 else ""))
-                        st.caption(f"Venda: {format_currency(p.preco_venda)} | Estoque: {int(p.estoque_atual or 0)}")
-                        if st.button("Editar", key=f"edit_cadastro_{p.id}", use_container_width=True):
-                            st.session_state.selected_product_id = p.id
-                            st.rerun()
+        # Ao mudar a seleção (novo↔produto ou produto↔produto), incrementa form_version
+        # para recriar os widgets e carregar os dados corretos (evita session_state antigo)
+        current_selection = st.session_state.selected_product_id if st.session_state.selected_product_id is not None else "novo"
+        prev_selection = st.session_state.get("form_prev_selection")
+        if prev_selection is None or current_selection != prev_selection:
+            st.session_state.form_version = st.session_state.form_version + 1
+            form_version = st.session_state.form_version
+            st.session_state.pop("produto_draft", None)  # Limpa preview ao trocar de produto
+        st.session_state.form_prev_selection = current_selection
 
         produto_atual = None
         if st.session_state.selected_product_id:
@@ -173,17 +142,6 @@ try:
         )
 
         with st.expander("Dados básicos", expanded=True):
-            codigo = st.text_input(
-                "Código (deixe em branco para gerar automaticamente)",
-                value=produto_atual.codigo if produto_atual else "",
-                disabled=not can_edit,
-            )
-            nome = st.text_input(
-                "Nome",
-                value=produto_atual.nome if produto_atual else "",
-                disabled=not can_edit,
-            )
-
             cat_opcoes = ["(Sem categoria)"] + [c.nome for c in categorias]
             default_cat = "(Sem categoria)"
             if produto_atual and produto_atual.categoria_id:
@@ -195,22 +153,39 @@ try:
                     default_cat = atual
 
             categoria_nome = st.selectbox(
-                "Categoria",
+                "Categoria *",
                 options=cat_opcoes,
                 index=cat_opcoes.index(default_cat) if default_cat in cat_opcoes else 0,
                 disabled=not can_edit,
+                key=f"cad_categoria_{form_version}",
+                help="Obrigatório para novo produto.",
+            )
+
+            codigo = st.text_input(
+                "Código (deixe em branco para gerar automaticamente)",
+                value=produto_atual.codigo if produto_atual else "",
+                disabled=not can_edit,
+                key=f"cad_codigo_{form_version}",
+            )
+            nome = st.text_input(
+                "Nome",
+                value=produto_atual.nome if produto_atual else "",
+                disabled=not can_edit,
+                key=f"cad_nome_{form_version}",
             )
 
             marca = st.text_input(
                 "Marca",
                 value=produto_atual.marca or "" if produto_atual else "",
                 disabled=not can_edit,
+                key=f"cad_marca_{form_version}",
             )
 
             ativo = st.checkbox(
                 "Produto ativo",
                 value=produto_atual.ativo if produto_atual else True,
                 disabled=not can_edit,
+                key=f"cad_ativo_{form_version}",
             )
         with st.expander("Preços e estoque", expanded=True):
             preco_custo = st.number_input(
@@ -219,6 +194,7 @@ try:
                 value=max(0.0, float(produto_atual.preco_custo)) if produto_atual else 0.0,
                 step=1.0,
                 disabled=not can_edit,
+                key=f"cad_preco_custo_{form_version}",
             )
             preco_venda = st.number_input(
                 "Preço de venda",
@@ -226,6 +202,7 @@ try:
                 value=max(0.0, float(produto_atual.preco_venda)) if produto_atual else 0.0,
                 step=1.0,
                 disabled=not can_edit,
+                key=f"cad_preco_venda_{form_version}",
             )
 
             estoque_val = 0.0
@@ -246,13 +223,13 @@ try:
                         min_value=0.0,
                         value=0.0,
                         step=1.0,
-                        key="entrada_qtd",
+                        key=f"entrada_qtd_{form_version}",
                         help="Quantidade que está entrando no estoque (compra/reposição).",
                     )
                     entrada_obs = st.text_input(
                         "Observação (opcional)",
                         placeholder="Ex: Compra fornecedor X, lote 123",
-                        key="entrada_obs",
+                        key=f"entrada_obs_{form_version}",
                     )
                     if st.button("Registrar entrada de estoque", type="secondary", key="btn_entrada") and entrada_qtd > 0:
                         entry = StockEntry(
@@ -274,6 +251,7 @@ try:
                     step=1.0,
                     disabled=not can_edit,
                     help="Quantidade em estoque ao cadastrar o produto.",
+                    key=f"cad_estoque_inicial_{form_version}",
                 )
 
             estoque_min_val = 0.0
@@ -289,6 +267,7 @@ try:
                 value=estoque_min_val,
                 step=1.0,
                 disabled=not can_edit,
+                key=f"cad_estoque_min_{form_version}",
             )
             margem = 0.0
             if preco_custo > 0:
@@ -300,6 +279,7 @@ try:
                 "Enviar imagem",
                 type=["png", "jpg", "jpeg", "webp"],
                 disabled=not can_edit,
+                key=f"cad_imagem_{form_version}",
             )
             if produto_atual and produto_atual.imagem_path:
                 uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
@@ -326,6 +306,8 @@ try:
         if salvar and can_edit:
             if not nome:
                 st.error("Preencha **Nome**.")
+            elif not produto_atual and categoria_nome == "(Sem categoria)":
+                st.error("Selecione uma **Categoria**.")
             else:
                 # Resolve categoria selecionada
                 categoria_obj = None
@@ -335,86 +317,212 @@ try:
                     )
 
                 # Geração automática de código se novo produto e campo em branco
+                codigo_final = codigo
                 if not produto_atual and not codigo:
-                    # Busca maior código no formato PNNNN
                     todos_codigos = [
-                        p.codigo
-                        for p in db.execute(select(Product.codigo)).scalars().all()
-                        if p
+                        c
+                        for c in db.execute(select(Product.codigo)).scalars().all()
+                        if c and isinstance(c, str)
                     ]
-                    nums = []
-                    for c in todos_codigos:
-                        if c.startswith("P") and c[1:].isdigit():
-                            nums.append(int(c[1:]))
-                    prox = (max(nums) + 1) if nums else 1
-                    codigo = f"P{prox:04d}"
+                    if categoria_obj is not None:
+                        nome_cat = categoria_obj.nome or ""
+                        nome_norm = unicodedata.normalize("NFKD", nome_cat)
+                        nome_norm = "".join(
+                            ch for ch in nome_norm if not unicodedata.combining(ch)
+                        )
+                        letras = "".join(ch for ch in nome_norm if ch.isalpha()).upper()
+                        prefixo = letras[:4] if letras else "P"
+                        nums = []
+                        for c in todos_codigos:
+                            if not c.startswith(prefixo):
+                                continue
+                            sufixo = c[len(prefixo) :]
+                            if sufixo.isdigit():
+                                nums.append(int(sufixo))
+                        prox = (max(nums) + 1) if nums else 1
+                        codigo_final = f"{prefixo}{prox:03d}"
+                    else:
+                        nums = []
+                        for c in todos_codigos:
+                            if len(c) >= 2 and c.startswith("P") and c[1:].isdigit():
+                                nums.append(int(c[1:]))
+                        prox = (max(nums) + 1) if nums else 1
+                        codigo_final = f"P{prox:04d}"
 
-                if not codigo:
+                if not codigo_final:
                     st.error("Código não pode ficar vazio.")
                 else:
                     if not produto_atual:
                         existe_codigo = (
-                            db.query(Product).filter(Product.codigo == codigo).first()
+                            db.query(Product).filter(Product.codigo == codigo_final).first()
                         )
                         if existe_codigo:
                             st.error("Já existe um produto com este código.")
                         else:
-                            produto_atual = Product(
-                                codigo=codigo,
-                                nome=nome,
-                                categoria=categoria_obj.nome
-                                if categoria_obj
-                                else None,
-                                marca=marca or None,
-                                preco_custo=preco_custo,
-                                preco_venda=preco_venda,
-                                estoque_atual=estoque_inicial,
-                                estoque_minimo=estoque_minimo or None,
-                                ativo=ativo,
-                                categoria_id=categoria_obj.id if categoria_obj else None,
-                            )
-                            db.add(produto_atual)
+                            img_bytes = imagem.getvalue() if imagem else None
+                            img_name = imagem.name if imagem else None
+                            st.session_state.produto_draft = {
+                                "product_id": None,
+                                "codigo": codigo_final,
+                                "nome": nome,
+                                "categoria_nome": categoria_obj.nome if categoria_obj else None,
+                                "marca": marca or None,
+                                "ativo": ativo,
+                                "preco_custo": preco_custo,
+                                "preco_venda": preco_venda,
+                                "estoque_inicial": estoque_inicial,
+                                "estoque_minimo": estoque_minimo or None,
+                                "categoria_id": categoria_obj.id if categoria_obj else None,
+                                "imagem_bytes": img_bytes,
+                                "imagem_name": img_name,
+                            }
+                            st.rerun()
                     else:
-                        produto_atual.codigo = codigo
-                        produto_atual.nome = nome
-                        produto_atual.categoria = (
-                            categoria_obj.nome if categoria_obj else None
-                        )
-                        produto_atual.marca = marca or None
-                        produto_atual.preco_custo = preco_custo
-                        produto_atual.preco_venda = preco_venda
-                        produto_atual.estoque_atual = estoque_inicial
-                        produto_atual.estoque_minimo = estoque_minimo or None
-                        produto_atual.ativo = ativo
-                        produto_atual.categoria_id = (
-                            categoria_obj.id if categoria_obj else None
-                        )
+                        img_bytes = imagem.getvalue() if imagem else None
+                        img_name = imagem.name if imagem else None
+                        st.session_state.produto_draft = {
+                            "product_id": produto_atual.id,
+                            "codigo": codigo_final,
+                            "nome": nome,
+                            "categoria_nome": categoria_obj.nome if categoria_obj else None,
+                            "marca": marca or None,
+                            "ativo": ativo,
+                            "preco_custo": preco_custo,
+                            "preco_venda": preco_venda,
+                            "estoque_inicial": estoque_inicial,
+                            "estoque_minimo": estoque_minimo or None,
+                            "categoria_id": categoria_obj.id if categoria_obj else None,
+                            "imagem_bytes": img_bytes,
+                            "imagem_name": img_name,
+                            "antes": {
+                                "codigo": produto_atual.codigo or "",
+                                "nome": produto_atual.nome or "",
+                                "categoria": produto_atual.categoria or "(Sem categoria)",
+                                "marca": produto_atual.marca or "",
+                                "ativo": produto_atual.ativo,
+                                "preco_custo": produto_atual.preco_custo or 0,
+                                "preco_venda": produto_atual.preco_venda or 0,
+                                "estoque_inicial": produto_atual.estoque_atual or 0,
+                                "estoque_minimo": produto_atual.estoque_minimo or 0,
+                            },
+                        }
+                        st.rerun()
 
-                db.commit()
-                db.refresh(produto_atual)
+        # Bloco de confirmação: exibe alterações abaixo do formulário e pede confirmação
+        draft = st.session_state.get("produto_draft")
+        if draft and can_edit:
+            st.markdown("---")
+            st.subheader("Confirmar alterações")
+            st.caption("Revise os dados abaixo e confirme para salvar definitivamente.")
 
-                # Salva imagem se enviada
-                if imagem is not None and produto_atual is not None:
+            campos = [
+                ("Código", "codigo", lambda v: str(v) if v else "-"),
+                ("Nome", "nome", lambda v: str(v) if v else "-"),
+                ("Categoria", "categoria_nome", lambda v: str(v) if v else "(Sem categoria)"),
+                ("Marca", "marca", lambda v: str(v) if v else "-"),
+                ("Ativo", "ativo", lambda v: "Sim" if v else "Não"),
+                ("Preço de custo", "preco_custo", lambda v: format_currency(float(v)) if v is not None else "-"),
+                ("Preço de venda", "preco_venda", lambda v: format_currency(float(v)) if v is not None else "-"),
+                ("Estoque inicial", "estoque_inicial", lambda v: f"{v:.0f}" if v is not None and v == int(v) else f"{v}" if v is not None else "-"),
+                ("Estoque mínimo", "estoque_minimo", lambda v: f"{v:.0f}" if v is not None and v == int(v) else f"{v}" if v is not None else "-"),
+            ]
+
+            linhas = []
+            for label, key, fmt in campos:
+                depois_val = draft.get(key)
+                depois_str = fmt(depois_val)
+                if "antes" in draft:
+                    antes_key = "categoria" if key == "categoria_nome" else key
+                    antes_val = draft["antes"].get(antes_key)
+                    antes_str = fmt(antes_val)
+                    mudou = (antes_val != depois_val)
+                    if mudou:
+                        linhas.append(f"| {label} | {antes_str} | **{depois_str}** |")
+                    else:
+                        linhas.append(f"| {label} | {antes_str} | {depois_str} |")
+                else:
+                    linhas.append(f"| {label} | - | **{depois_str}** |")
+
+            tabela = "| Campo | Antes | Depois |\n|:------|:------|:-------|\n" + "\n".join(linhas)
+            st.markdown(tabela)
+
+            if draft.get("imagem_bytes"):
+                st.caption("📷 Nova imagem será salva.")
+
+            col_cf, col_cc = st.columns(2)
+            with col_cf:
+                confirmar = st.button("Confirmar", type="primary", use_container_width=True, key="btn_confirmar_produto")
+            with col_cc:
+                cancelar = st.button("Cancelar", type="secondary", use_container_width=True, key="btn_cancelar_produto")
+
+            if confirmar:
+                prod_id = draft.get("product_id")
+                if prod_id:
+                    prod = db.get(Product, prod_id)
+                    if prod:
+                        prod.codigo = draft["codigo"]
+                        prod.nome = draft["nome"]
+                        prod.categoria = draft.get("categoria_nome")
+                        prod.marca = draft.get("marca") or None
+                        prod.preco_custo = draft["preco_custo"]
+                        prod.preco_venda = draft["preco_venda"]
+                        prod.estoque_atual = draft["estoque_inicial"]
+                        prod.estoque_minimo = draft.get("estoque_minimo")
+                        prod.ativo = draft["ativo"]
+                        prod.categoria_id = draft.get("categoria_id")
+                        db.commit()
+                        db.refresh(prod)
+                        produto_salvo = prod
+                else:
+                    produto_salvo = Product(
+                        codigo=draft["codigo"],
+                        nome=draft["nome"],
+                        categoria=draft.get("categoria_nome"),
+                        marca=draft.get("marca") or None,
+                        preco_custo=draft["preco_custo"],
+                        preco_venda=draft["preco_venda"],
+                        estoque_atual=draft["estoque_inicial"],
+                        estoque_minimo=draft.get("estoque_minimo"),
+                        ativo=draft["ativo"],
+                        categoria_id=draft.get("categoria_id"),
+                    )
+                    db.add(produto_salvo)
+                    db.commit()
+                    db.refresh(produto_salvo)
+
+                if draft.get("imagem_bytes") and produto_salvo:
                     uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
                     products_dir = uploads_dir / "products"
                     products_dir.mkdir(parents=True, exist_ok=True)
-
-                    ext = os.path.splitext(imagem.name)[1].lower()
-                    filename = f"{produto_atual.id}{ext}"
+                    ext = os.path.splitext(draft.get("imagem_name", ".jpg"))[1].lower() or ".jpg"
+                    filename = f"{produto_salvo.id}{ext}"
                     rel_path = Path("products") / filename
                     full_path = products_dir / filename
                     with open(full_path, "wb") as f:
-                        f.write(imagem.getbuffer())
-                    produto_atual.imagem_path = str(rel_path).replace("\\", "/")
+                        f.write(draft["imagem_bytes"])
+                    produto_salvo.imagem_path = str(rel_path).replace("\\", "/")
                     db.commit()
 
-                st.success("Produto salvo com sucesso.")
+                st.success(
+                    f"Produto salvo: código **{produto_salvo.codigo}**, "
+                    f"nome **{produto_salvo.nome}**, preço de venda "
+                    f"**{format_currency(produto_salvo.preco_venda)}**."
+                )
+                st.session_state.pop("produto_draft", None)
+                st.session_state.form_version = form_version + 1
+                st.session_state.selected_product_id = None
+                st.rerun()
+
+            if cancelar:
+                st.session_state.pop("produto_draft", None)
                 st.rerun()
 
         if excluir and can_edit and produto_atual:
             db.delete(produto_atual)
             db.commit()
             st.success("Produto excluído.")
+            st.session_state.form_version = form_version + 1
+            st.session_state.selected_product_id = None
             st.rerun()
 
     with tab_estoque:
@@ -605,21 +713,6 @@ try:
                 )
             st.dataframe(linhas, use_container_width=True, hide_index=True)
 
-            st.markdown("---")
-            st.subheader("Editar produto")
-            opcoes_editar = [f"{p.codigo} — {p.nome}" for p in produtos_lista]
-            ids_editar = [p.id for p in produtos_lista]
-            escolha_editar = st.selectbox(
-                "Selecione o produto que deseja editar",
-                options=opcoes_editar,
-                index=0,
-                key="escolha_editar",
-            )
-            if st.button("Abrir para edição", type="primary", key="btn_editar"):
-                idx_ed = opcoes_editar.index(escolha_editar)
-                st.session_state.edit_product_id = ids_editar[idx_ed]
-                st.rerun()
-
     # Aba de categorias (apenas para admin/gerente)
     if tab_categorias is not None:
         with tab_categorias:
@@ -699,6 +792,16 @@ try:
                 if not categoria_atual:
                     st.session_state.pop("edit_categoria_id", None)
 
+            # Versão do formulário: ao mudar a categoria selecionada, incrementa para
+            # recriar os widgets com os dados corretos (evita session_state antigo)
+            if "cat_form_version" not in st.session_state:
+                st.session_state.cat_form_version = 0
+            prev_cat_id = st.session_state.get("cat_form_prev_id")
+            if edit_categoria_id != prev_cat_id:
+                st.session_state.cat_form_version = st.session_state.cat_form_version + 1
+            st.session_state.cat_form_prev_id = edit_categoria_id
+            cat_form_version = st.session_state.cat_form_version
+
             col_novo, col_esp = st.columns([1, 3])
             with col_novo:
                 if st.button("➕ Nova categoria", key="btn_nova_cat"):
@@ -710,17 +813,17 @@ try:
             nome_cat = st.text_input(
                 "Nome da categoria",
                 value=categoria_atual.nome if categoria_atual else "",
-                key="nome_cat_input",
+                key=f"nome_cat_{cat_form_version}",
             )
             descricao_cat = st.text_area(
                 "Descrição (opcional)",
                 value=categoria_atual.descricao or "" if categoria_atual else "",
-                key="descricao_cat_input",
+                key=f"descricao_cat_{cat_form_version}",
             )
             ativo_cat = st.checkbox(
                 "Categoria ativa",
                 value=categoria_atual.ativo if categoria_atual else True,
-                key="ativo_cat_check",
+                key=f"ativo_cat_{cat_form_version}",
             )
 
             col_ca, col_cb = st.columns(2)
