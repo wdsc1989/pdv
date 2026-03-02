@@ -6,4 +6,5 @@ from .accessory import AccessorySale, AccessoryStock, AccessoryStockEntry  # noq
 from .cash_session import CashSession  # noqa: F401
 from .sale import Sale, SaleItem  # noqa: F401
 from .account_payable import AccountPayable  # noqa: F401
+from .account_receivable import AccountReceivable  # noqa: F401
 from .ai_config import AIConfig  # noqa: F401

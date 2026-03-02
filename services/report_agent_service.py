@@ -8,7 +8,7 @@ import re
 from calendar import monthrange
 from collections import defaultdict
 from datetime import date, datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
@@ -17,6 +17,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from models.account_payable import AccountPayable
+from models.account_receivable import AccountReceivable
 from models.cash_session import CashSession
 from models.product import Product
 from models.sale import Sale, SaleItem
@@ -67,9 +68,12 @@ class ReportAgentService:
         self.db = db
         self.ai_service = AIService(db)
 
-    def analyze_query(self, query: str) -> Dict[str, Any]:
+    def analyze_query(
+        self, query: str, conversation_history: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
         """
         Analisa a pergunta em linguagem natural e retorna intent, data_type, period, etc.
+        conversation_history: últimas mensagens (role + content) para manter contexto (mín. 5 conversas).
         """
         if not self.ai_service.is_available():
             return {
@@ -78,10 +82,24 @@ class ReportAgentService:
             }
 
         data_hoje = date.today().strftime("%d/%m/%Y")
-        prompt = f"""Você é um assistente de relatórios de PDV (ponto de venda). O sistema tem: vendas, estoque, sessões de caixa, contas a pagar, produtos mais vendidos e análises avançadas (tendências, previsões, sazonalidade).
+        history_block = ""
+        if conversation_history:
+            recent = conversation_history[-10:]
+            lines = []
+            for m in recent:
+                role = (m.get("role") or "user").strip().lower()
+                content = (m.get("content") or "").strip()
+                if not content:
+                    continue
+                label = "Usuário" if role == "user" else "Assistente"
+                lines.append(f"{label}: {content[:500]}{'...' if len(content) > 500 else ''}")
+            if lines:
+                history_block = "\n\n**Histórico recente da conversa (use para manter o contexto do assunto):**\n" + "\n".join(lines) + "\n\n"
+
+        prompt = f"""Você é um assistente de relatórios de PDV (ponto de venda). O sistema tem: vendas, estoque, sessões de caixa, contas a pagar, contas a receber (fiado), produtos mais vendidos e análises avançadas (tendências, previsões, sazonalidade).
 
 **IMPORTANTE: A data de HOJE é {data_hoje}.** Use SEMPRE esta data como referência para "hoje", "este mês", "próximo mês", "mês que vem", etc. Nunca invente ou use outra data.
-
+{history_block}
 Analise a pergunta do usuário e retorne APENAS um JSON válido (sem markdown, sem texto extra) com:
 {{
     "intent": "consulta|resumo|relatorio|analise",
@@ -111,6 +129,7 @@ Regras para data_type:
 - "entradas_estoque": entradas de estoque no período (data, produto, quantidade)
 - "sessoes_caixa": sessões de caixa no período (abertura, fechamento, totais)
 - "contas_pagar": contas a pagar com vencimento no período
+- "contas_receber": contas a receber (vendas fiado, valores a receber de clientes) com vencimento no período
 - "analise_avancada": previsões, tendências de vendas, sazonalidade (histórico e mercado), notícias atuais. Use quando o usuário pedir: previsão, tendência, análise avançada, sazonalidade, comportamento das vendas, projeção, como está o mercado, notícias que impactam vendas.
 
 Se a pergunta for sobre "quanto vendi", "faturamento", "lucro do mês", "resumo do período" -> data_type: "resumo_periodo" ou "vendas".
@@ -121,7 +140,7 @@ Se for "caixa", "sessões de caixa" -> "sessoes_caixa".
 Se for "contas a pagar", "o que vence", "contas do próximo mês", "contas mês que vem" -> "contas_pagar" e use period.type "proximo_mes" quando for sobre o mês seguinte.
 Se for "previsão de vendas", "tendência", "sazonalidade", "análise avançada", "como será o próximo mês", "comportamento do mercado", "notícias" -> data_type: "analise_avancada".
 
-Pergunta: {query}
+**Pergunta atual do usuário:** {query}
 
 Retorne APENAS o JSON."""
 
@@ -248,6 +267,8 @@ Retorne APENAS o JSON."""
                 return self._query_sessoes_caixa(db, start_date, end_date)
             if data_type == "contas_pagar":
                 return self._query_contas_pagar(db, start_date, end_date)
+            if data_type == "contas_receber":
+                return self._query_contas_receber(db, start_date, end_date)
             if data_type == "analise_avancada":
                 return self._query_analise_avancada(db, start_date, end_date)
             # default
@@ -460,6 +481,44 @@ Retorne APENAS o JSON."""
             },
         }
 
+    def _query_contas_receber(
+        self, db: Session, start_date: date, end_date: date
+    ) -> Dict[str, Any]:
+        """Contas a receber (fiado) com vencimento no período."""
+        contas = (
+            db.query(AccountReceivable)
+            .filter(AccountReceivable.data_vencimento >= start_date)
+            .filter(AccountReceivable.data_vencimento <= end_date)
+            .order_by(AccountReceivable.data_vencimento)
+            .all()
+        )
+        total_abertas = 0.0
+        total_recebidas = 0.0
+        rows = []
+        for c in contas:
+            c.update_status()
+            if c.status == "recebida":
+                total_recebidas += c.valor
+            else:
+                total_abertas += c.valor
+            rows.append({
+                "cliente": c.cliente,
+                "data_vencimento": c.data_vencimento.isoformat(),
+                "data_recebimento": c.data_recebimento.isoformat() if c.data_recebimento else None,
+                "valor": float(c.valor),
+                "status": c.status,
+            })
+        return {
+            "type": "contas_receber",
+            "data": {
+                "contas": rows,
+                "total_abertas": total_abertas,
+                "total_recebidas": total_recebidas,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+            },
+        }
+
     def _fetch_news_headlines(self, limit: int = 5) -> List[Dict[str, str]]:
         """Busca manchetes de economia/varejo em RSS para contexto da análise."""
         urls = [
@@ -595,6 +654,58 @@ Retorne APENAS o JSON."""
             .all()
         )
         total_contas_semana = sum(c.valor for c in contas_semana)
+        contas_receber_semana = (
+            db.query(AccountReceivable)
+            .filter(AccountReceivable.data_vencimento >= inicio_semana)
+            .filter(AccountReceivable.data_vencimento <= fim_semana)
+            .filter(AccountReceivable.status != "recebida")
+            .all()
+        )
+        total_contas_receber_semana = sum(c.valor for c in contas_receber_semana)
+        # Contas a pagar em aberto (não pagas) para listar na análise; atualiza status para identificar atrasadas
+        contas_pagar_abertas = (
+            db.query(AccountPayable)
+            .filter(AccountPayable.data_pagamento.is_(None))
+            .order_by(AccountPayable.data_vencimento)
+            .limit(50)
+            .all()
+        )
+        contas_pagar_abertas_lista = []
+        contas_atrasadas_lista = []
+        for c in contas_pagar_abertas:
+            c.update_status()
+            item = {
+                "fornecedor": c.fornecedor,
+                "valor": round(float(c.valor), 2),
+                "data_vencimento": c.data_vencimento.strftime("%d/%m/%Y"),
+                "status": c.status,
+            }
+            contas_pagar_abertas_lista.append(item)
+            if c.status == "atrasada":
+                contas_atrasadas_lista.append(item)
+        # Contas a receber: somente atrasadas e que vencem nos próximos 15 dias
+        limite_proximas = today + relativedelta(days=15)
+        contas_receber_abertas = (
+            db.query(AccountReceivable)
+            .filter(AccountReceivable.data_recebimento.is_(None))
+            .filter(AccountReceivable.data_vencimento <= limite_proximas)
+            .order_by(AccountReceivable.data_vencimento)
+            .all()
+        )
+        contas_receber_atrasadas_lista = []
+        contas_receber_proximas_lista = []
+        for c in contas_receber_abertas:
+            c.update_status()
+            item = {
+                "cliente": c.cliente,
+                "valor": round(float(c.valor), 2),
+                "data_vencimento": c.data_vencimento.strftime("%d/%m/%Y"),
+                "status": c.status,
+            }
+            if c.status == "atrasada":
+                contas_receber_atrasadas_lista.append(item)
+            else:
+                contas_receber_proximas_lista.append(item)
         mes_atual = today.month
         dia_do_mes = today.day
         proximo_virada_mes = dia_do_mes >= 25
@@ -620,10 +731,16 @@ Retorne APENAS o JSON."""
             "media_diaria_historico": round(media_geral, 2),
             "contas_a_pagar_esta_semana": round(total_contas_semana, 2),
             "quantidade_contas_semana": len(contas_semana),
+            "contas_a_receber_esta_semana": round(total_contas_receber_semana, 2),
+            "quantidade_contas_receber_semana": len(contas_receber_semana),
             "sazonalidade_mercado_mes": sazonalidade_geral,
             "sazonalidade_moda_feminina_mes": sazonalidade_moda,
             "inicio_semana": inicio_semana.strftime("%d/%m"),
             "fim_semana": fim_semana.strftime("%d/%m"),
+            "contas_a_pagar_abertas": contas_pagar_abertas_lista,
+            "contas_a_pagar_em_atraso": contas_atrasadas_lista,
+            "contas_a_receber_em_atraso": contas_receber_atrasadas_lista,
+            "contas_a_receber_proximas_15_dias": contas_receber_proximas_lista,
         }
         if not self.ai_service.is_available():
             return self._initial_analysis_fallback(payload)
@@ -644,10 +761,16 @@ Conteúdo:
 3. **Pontos fortes para o dia e para a semana**  
    2 a 4 pontos fortes (dia de movimento, campanhas do período, estoque, horários de pico).
 
-4. **Pontos de atenção / fracos**  
-   2 a 4 pontos (contas a pagar desta semana, fluxo de caixa, pagamentos, datas que impactam negativamente). Use "contas_a_pagar_esta_semana" e "quantidade_contas_semana" quando relevante.
+4. **Contas a pagar**  
+   Liste as contas em "contas_a_pagar_abertas" (fornecedor, valor, data de vencimento, status). Se "contas_a_pagar_em_atraso" tiver itens, inclua um **alerta em destaque**: "⚠️ **Em atraso:**" e liste essas contas, pedindo para regularizar.
 
-5. **Se "proximo_virada_mes" for true:** adicione a seção **Insights para a semana que começa** (de proxima_semana_inicio a proxima_semana_fim): o que esperar na virada do mês, sazonalidade do mês que entra ("sazonalidade_proximo_mes"), e dicas para se preparar.
+5. **Contas a receber (fiado)**  
+   Exiba somente: (a) as em "contas_a_receber_em_atraso" e (b) as em "contas_a_receber_proximas_15_dias" (vencem nos próximos 15 dias). Para cada uma: cliente, valor, data de vencimento, status. Se "contas_a_receber_em_atraso" tiver itens, inclua **alerta**: "⚠️ **Em atraso (a cobrar):**" e liste essas contas.
+
+6. **Pontos de atenção / fracos**  
+   2 a 4 pontos (contas a pagar desta semana, contas a receber/fiado a cobrar, fluxo de caixa, pagamentos). Use "contas_a_pagar_esta_semana", "quantidade_contas_semana", "contas_a_receber_esta_semana" e "quantidade_contas_receber_semana" quando relevante.
+
+7. **Se "proximo_virada_mes" for true:** adicione a seção **Insights para a semana que começa** (de proxima_semana_inicio a proxima_semana_fim): o que esperar na virada do mês, sazonalidade do mês que entra ("sazonalidade_proximo_mes"), e dicas para se preparar.
 
 Use títulos curtos (## ou ###), listas e valores em R$ no padrão brasileiro. Seja objetivo e útil para a gestora da loja.
 
@@ -701,7 +824,34 @@ Retorne apenas o markdown da análise."""
             f"**Sazonalidade do mês:** {payload.get('sazonalidade_moda_feminina_mes', payload.get('sazonalidade_mercado_mes', ''))}\n\n"
             f"**Contas a pagar esta semana** ({payload.get('inicio_semana', '')} a {payload.get('fim_semana', '')}): "
             f"{format_currency(payload.get('contas_a_pagar_esta_semana', 0))} ({payload.get('quantidade_contas_semana', 0)} títulos).\n\n"
+            f"**Contas a receber (fiado) esta semana:** "
+            f"{format_currency(payload.get('contas_a_receber_esta_semana', 0))} ({payload.get('quantidade_contas_receber_semana', 0)} títulos).\n\n"
         )
+        contas_abertas = payload.get("contas_a_pagar_abertas") or []
+        contas_atrasadas = payload.get("contas_a_pagar_em_atraso") or []
+        if contas_atrasadas:
+            bloco += "**⚠️ Em atraso:**\n\n"
+            for c in contas_atrasadas:
+                bloco += f"- {c.get('fornecedor', '')} — {format_currency(c.get('valor', 0))} — venc. {c.get('data_vencimento', '')}\n"
+            bloco += "\n"
+        if contas_abertas:
+            bloco += "**Contas a pagar (em aberto):**\n\n"
+            for c in contas_abertas:
+                atraso = " — *atrasada*" if c.get("status") == "atrasada" else ""
+                bloco += f"- {c.get('fornecedor', '')} — {format_currency(c.get('valor', 0))} — venc. {c.get('data_vencimento', '')}{atraso}\n"
+            bloco += "\n"
+        contas_rec_atrasadas = payload.get("contas_a_receber_em_atraso") or []
+        contas_rec_proximas = payload.get("contas_a_receber_proximas_15_dias") or []
+        if contas_rec_atrasadas:
+            bloco += "**⚠️ Contas a receber em atraso (a cobrar):**\n\n"
+            for c in contas_rec_atrasadas:
+                bloco += f"- {c.get('cliente', '')} — {format_currency(c.get('valor', 0))} — venc. {c.get('data_vencimento', '')}\n"
+            bloco += "\n"
+        if contas_rec_proximas:
+            bloco += "**Contas a receber (próximos 15 dias):**\n\n"
+            for c in contas_rec_proximas:
+                bloco += f"- {c.get('cliente', '')} — {format_currency(c.get('valor', 0))} — venc. {c.get('data_vencimento', '')}\n"
+            bloco += "\n"
         if payload.get("proximo_virada_mes") and payload.get("sazonalidade_proximo_mes"):
             bloco += (
                 f"**Próxima semana** ({payload.get('proxima_semana_inicio', '')} a {payload.get('proxima_semana_fim', '')}): "
@@ -717,11 +867,15 @@ Retorne apenas o markdown da análise."""
         if query_result.get("type") == "error":
             return f"**Erro:** {query_result.get('error', 'Erro desconhecido')}"
 
+        query_type = query_result.get("type", "")
+        # Resumo/faturamento: sempre formatação fixa para resposta clara e consistente
+        if query_type == "resumo_periodo":
+            return self._format_response_simple(query_result, query_analysis)
+
         if not self.ai_service.is_available():
             return self._format_response_simple(query_result, query_analysis)
 
         data = query_result.get("data", {})
-        query_type = query_result.get("type", "")
 
         if query_type == "analise_avancada":
             prompt = f"""Você é um analista de relatórios de PDV. Com base nos dados abaixo, elabore uma **análise avançada** em português, incluindo:
@@ -797,14 +951,38 @@ Retorne a resposta em markdown."""
         data = query_result.get("data", {})
 
         if query_type == "resumo_periodo":
+            start_iso = data.get("start_date", "")
+            end_iso = data.get("end_date", "")
+            try:
+                start_br = date.fromisoformat(start_iso).strftime("%d/%m/%Y") if start_iso else start_iso
+                end_br = date.fromisoformat(end_iso).strftime("%d/%m/%Y") if end_iso else end_iso
+            except (ValueError, TypeError):
+                start_br, end_br = start_iso, end_iso
+            is_single_day = start_iso and end_iso and start_iso == end_iso
+            total = data.get("total_vendido", 0) or 0
+            lucro = data.get("total_lucro", 0) or 0
+            margem = data.get("margem", 0) or 0
+            pecas = data.get("total_pecas", 0) or 0
+            num_v = data.get("num_vendas", 0) or 0
+            ticket = data.get("ticket_medio", 0) or 0
+            if is_single_day:
+                return (
+                    f"### Faturamento do dia ({start_br})\n\n"
+                    f"**Faturamento:** {format_currency(total)}\n\n"
+                    f"**Lucro:** {format_currency(lucro)}  \n"
+                    f"**Margem:** {margem:.1f}%\n\n"
+                    f"**Peças vendidas:** {pecas:.0f}  \n"
+                    f"**Número de vendas:** {num_v}  \n"
+                    f"**Ticket médio:** {format_currency(ticket)}"
+                )
             return (
-                f"**Resumo do período** ({data.get('start_date', '')} a {data.get('end_date', '')})\n\n"
-                f"- **Total vendido:** {format_currency(data.get('total_vendido', 0))}\n"
-                f"- **Total de lucro:** {format_currency(data.get('total_lucro', 0))}\n"
-                f"- **Margem:** {data.get('margem', 0):.2f}%\n"
-                f"- **Peças vendidas:** {data.get('total_pecas', 0)}\n"
-                f"- **Número de vendas:** {data.get('num_vendas', 0)}\n"
-                f"- **Ticket médio:** {format_currency(data.get('ticket_medio', 0))}"
+                f"### Resumo do período ({start_br} a {end_br})\n\n"
+                f"**Faturamento:** {format_currency(total)}\n\n"
+                f"**Lucro:** {format_currency(lucro)}  \n"
+                f"**Margem:** {margem:.1f}%\n\n"
+                f"**Peças vendidas:** {pecas:.0f}  \n"
+                f"**Número de vendas:** {num_v}  \n"
+                f"**Ticket médio:** {format_currency(ticket)}"
             )
         if query_type == "produtos_mais_vendidos":
             items = data.get("items", [])
@@ -853,6 +1031,18 @@ Retorne a resposta em markdown."""
                 f"**Contas a pagar** ({data.get('start_date', '')} a {data.get('end_date', '')})\n\n"
                 f"Total em aberto: {format_currency(data.get('total_abertas', 0))} | "
                 f"Total pagas: {format_currency(data.get('total_pagas', 0))}\n\n"
+                + "\n".join(lines or ["Nenhuma conta no período."])
+            )
+        if query_type == "contas_receber":
+            contas = data.get("contas", [])
+            lines = [
+                f"- {c.get('cliente')}: venc. {c.get('data_vencimento')}, {format_currency(c.get('valor', 0))} ({c.get('status')})"
+                for c in contas
+            ]
+            return (
+                f"**Contas a receber (fiado)** ({data.get('start_date', '')} a {data.get('end_date', '')})\n\n"
+                f"Total em aberto: {format_currency(data.get('total_abertas', 0))} | "
+                f"Total recebidas: {format_currency(data.get('total_recebidas', 0))}\n\n"
                 + "\n".join(lines or ["Nenhuma conta no período."])
             )
         if query_type == "analise_avancada":

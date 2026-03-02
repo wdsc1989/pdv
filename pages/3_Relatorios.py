@@ -13,6 +13,7 @@ from sqlalchemy import func
 
 from config.database import SessionLocal
 from models.account_payable import AccountPayable
+from models.account_receivable import AccountReceivable
 from models.cash_session import CashSession
 from models.product import Product
 from models.sale import Sale, SaleItem
@@ -29,7 +30,7 @@ show_sidebar()
 
 st.markdown(
     "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>📈 Relatórios</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>Período: totais, lucro, produtos mais vendidos e caixa.</p>",
+    "<p style='margin:0; font-size:0.8rem; color:#666;'>Período: totais, lucro, produtos mais vendidos, caixa, contas a pagar e contas a receber.</p>",
     unsafe_allow_html=True,
 )
 st.markdown("---")
@@ -239,26 +240,26 @@ try:
     st.markdown("---")
     st.subheader("Contas a pagar no período (por vencimento)")
 
-    contas = (
+    contas_pagar = (
         db.query(AccountPayable)
         .filter(AccountPayable.data_vencimento >= data_inicio)
         .filter(AccountPayable.data_vencimento <= data_fim)
         .order_by(AccountPayable.data_vencimento)
         .all()
     )
-    if not contas:
+    if not contas_pagar:
         st.info("Nenhuma conta a pagar no período.")
     else:
-        total_abertas = 0.0
-        total_pagas = 0.0
-        linhas_c = []
-        for c in contas:
+        total_abertas_p = 0.0
+        total_pagas_p = 0.0
+        linhas_pagar = []
+        for c in contas_pagar:
             c.update_status()
             if c.status == "paga":
-                total_pagas += c.valor
+                total_pagas_p += c.valor
             else:
-                total_abertas += c.valor
-            linhas_c.append(
+                total_abertas_p += c.valor
+            linhas_pagar.append(
                 {
                     "Fornecedor": c.fornecedor,
                     "Vencimento": format_date(c.data_vencimento),
@@ -271,10 +272,52 @@ try:
             )
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Total em aberto", format_currency(total_abertas))
+            st.metric("Total em aberto", format_currency(total_abertas_p))
         with col2:
-            st.metric("Total pagas", format_currency(total_pagas))
-        st.dataframe(linhas_c, use_container_width=True, hide_index=True)
+            st.metric("Total pagas", format_currency(total_pagas_p))
+        df_pagar = pd.DataFrame(linhas_pagar)
+        st.dataframe(df_pagar, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Contas a receber no período (por vencimento)")
+
+    contas_receber = (
+        db.query(AccountReceivable)
+        .filter(AccountReceivable.data_vencimento >= data_inicio)
+        .filter(AccountReceivable.data_vencimento <= data_fim)
+        .order_by(AccountReceivable.data_vencimento)
+        .all()
+    )
+    if not contas_receber:
+        st.info("Nenhuma conta a receber no período.")
+    else:
+        total_abertas_r = 0.0
+        total_recebidas_r = 0.0
+        linhas_receber = []
+        for c in contas_receber:
+            c.update_status()
+            if c.status == "recebida":
+                total_recebidas_r += c.valor
+            else:
+                total_abertas_r += c.valor
+            linhas_receber.append(
+                {
+                    "Cliente": c.cliente,
+                    "Vencimento": format_date(c.data_vencimento),
+                    "Recebimento": format_date(c.data_recebimento)
+                    if c.data_recebimento
+                    else "-",
+                    "Valor": format_currency(c.valor),
+                    "Status": c.status,
+                }
+            )
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Total em aberto", format_currency(total_abertas_r))
+        with col2:
+            st.metric("Total recebidas", format_currency(total_recebidas_r))
+        df_receber = pd.DataFrame(linhas_receber)
+        st.dataframe(df_receber, use_container_width=True, hide_index=True)
 
 finally:
     db.close()

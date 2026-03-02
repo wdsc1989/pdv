@@ -1,14 +1,13 @@
 """
 Serviço de horóscopo: busca texto na internet e opcionalmente resume com IA.
-No expander, exibe apenas a parte relacionada a trabalho, formatada pela IA, com período.
+Exibe o resumo do horóscopo do dia na tela inicial, atualizado diariamente.
 """
 import re
-from datetime import date
-from typing import Optional
-from urllib.error import URLError
-from urllib.request import Request, urlopen
+from typing import Optional, Tuple
 
 from sqlalchemy.orm import Session
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 
 # Map signo (valor no banco) para slug em URLs comuns de horóscopo
@@ -43,32 +42,32 @@ SIGN_DISPLAY = {
 }
 
 
-def fetch_horoscope_from_web(signo: str) -> Optional[str]:
+def fetch_horoscope_from_web(signo: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Busca o horóscopo do dia na internet para o signo.
-    Retorna texto bruto ou None se falhar.
+    Retorna (texto_bruto, url_fonte) ou (None, None) se falhar.
     """
     slug = SIGN_TO_SLUG.get((signo or "").lower())
     if not slug:
-        return None
+        return (None, None)
     urls = [
-        f"https://www.horoscopovirtual.com.br/horoscopo/{slug}",
-        f"https://www.uol.com.br/astro/horoscopo/{slug}/dia/",
+        ("https://www.horoscopovirtual.com.br/horoscopo/{slug}".format(slug=slug), "horoscopovirtual.com.br"),
+        ("https://www.uol.com.br/astro/horoscopo/{slug}/dia/".format(slug=slug), "uol.com.br/astro"),
     ]
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
-    for url in urls:
+    for url, source_label in urls:
         try:
             req = Request(url, headers=headers)
             with urlopen(req, timeout=10) as resp:
                 html = resp.read().decode("utf-8", errors="replace")
             text = _extract_text_from_html(html)
             if text and len(text.strip()) > 50:
-                return text.strip()
+                return (text.strip(), source_label)
         except (URLError, OSError, Exception):
             continue
-    return None
+    return (None, None)
 
 
 def _extract_text_from_html(html: str) -> str:
@@ -118,58 +117,25 @@ def _call_ai(client, provider: str, model: str, prompt: str, max_tokens: int = 5
     return None
 
 
-def _build_work_horoscope_expander(
-    db: Session, raw: str, sign_name: str, period_label: str
-) -> Optional[str]:
-    """
-    Usa a IA para extrair e formatar apenas a parte de TRABALHO do horóscopo.
-    Retorna texto para o expander (período + conteúdo trabalho) ou None.
-    """
-    from config.ai_config import AIConfigManager
-    from services.ai_service import AIService
-
-    if not AIConfigManager.is_configured(db):
-        return None
-    ai = AIService(db)
-    client, err = ai._get_client()
-    if err or not client:
-        return None
-    config = ai.config
-    provider = config["provider"]
-    model = config.get("model", "")
-    prompt = (
-        f"Do texto abaixo do horóscopo do signo de {sign_name}, extraia e reformule APENAS o que for "
-        "relacionado a TRABALHO, CARREIRA, PROFISSIONAL ou NEGÓCIOS. Formate em português claro e objetivo, "
-        "em 2 a 5 frases, com boa legibilidade. Se não houver menção explícita a trabalho, resuma em 1 ou 2 "
-        "frases o que o horóscopo sugere para o âmbito profissional com base no tom geral. Não invente informações. "
-        "Use markdown leve (negrito para ênfase).\n\nTexto:\n" + (raw[:3000] or "")
-    )
-    work_text = _call_ai(client, provider, model, prompt, max_tokens=400)
-    if not work_text:
-        return None
-    return f"{period_label}\n\n{work_text}"
-
-
 def get_horoscope_for_user(db: Session, user_id: int, signo: Optional[str]) -> dict:
     """
     Retorna o horóscopo para exibir na tela inicial.
-    Retorno: {"summary": str, "full": str | None}.
-    - summary: resumo (IA ou trecho) para exibir sempre.
-    - full: no expander, apenas horóscopo focado em TRABALHO, formatado pela IA, com período.
+    Retorno: {"summary": str, "source": str | None}.
+    - summary: resumo (IA ou trecho) do horóscopo do dia, atualizado diariamente.
+    - source: rótulo da fonte para exibir em texto pequeno.
     """
     if not signo or not signo.strip():
-        return {"summary": "", "full": None}
+        return {"summary": "", "source": None}
 
     signo = signo.strip().lower()
-    raw = fetch_horoscope_from_web(signo)
+    raw, source_label = fetch_horoscope_from_web(signo)
     sign_name = SIGN_DISPLAY.get(signo, signo)
 
     if not raw:
         msg = f"**Horóscopo – {sign_name}**\n\nNão foi possível buscar a previsão do dia. Tente novamente mais tarde."
-        return {"summary": msg, "full": None}
+        return {"summary": msg, "source": None}
 
     raw = raw.strip()
-    period_label = f"**Período:** dia {date.today().strftime('%d/%m/%Y')}"
 
     # Resumo principal (IA ou trecho)
     summary_text = None
@@ -201,12 +167,4 @@ def get_horoscope_for_user(db: Session, user_id: int, signo: Optional[str]) -> d
             snippet += "..."
         summary = f"**Horóscopo – {sign_name}**\n\n{snippet}"
 
-    # Expander: só horóscopo de trabalho, formatado pela IA, com período
-    full = _build_work_horoscope_expander(db, raw, sign_name, period_label)
-    if not full:
-        full = (
-            f"{period_label}\n\n"
-            "*Para ver a previsão focada em **trabalho** (formatada pela IA), configure a IA em Administração.*"
-        )
-
-    return {"summary": summary, "full": full}
+    return {"summary": summary, "source": source_label}

@@ -14,12 +14,13 @@ import streamlit as st
 from config.database import SessionLocal
 from services.auth_service import AuthService
 from services.report_agent_service import ReportAgentService
+from services.speech_to_text_service import transcribe_audio
 from utils.formatters import format_currency
 from utils.navigation import show_sidebar
 
 st.set_page_config(page_title="Agente Relatórios", page_icon="🤖", layout="wide")
 
-AuthService.require_roles(["admin", "gerente"])
+AuthService.require_roles(["admin"])
 show_sidebar()
 
 st.markdown(
@@ -77,7 +78,30 @@ for msg in st.session_state.chat_history:
             if not df.empty:
                 st.dataframe(df, use_container_width=True, hide_index=True)
 
+# Entrada por texto ou por áudio (microfone → transcrição)
 query = st.chat_input("Pergunte sobre vendas, estoque, caixa ou contas a pagar...")
+query = query or st.session_state.pop("pending_audio_query", None)
+
+with st.expander("🎤 Gravar pelo microfone"):
+    st.caption("Use o microfone do dispositivo. Após gravar, o áudio é transcrito e enviado como pergunta (não é guardado no servidor).")
+    audio_key = f"audio_relatorios_{st.session_state.get('audio_relatorios_counter', 0)}"
+    audio_data = st.audio_input("Gravar áudio", key=audio_key, sample_rate=16000)
+    if audio_data:
+        db_audio = SessionLocal()
+        try:
+            with st.spinner("Transcrevendo áudio..."):
+                audio_bytes = audio_data.read()
+                text, err = transcribe_audio(db_audio, audio_bytes, "audio.wav")
+            del audio_bytes
+            if err:
+                st.error(err)
+            elif text:
+                st.session_state["pending_audio_query"] = text
+                st.session_state["audio_relatorios_counter"] = st.session_state.get("audio_relatorios_counter", 0) + 1
+                st.success(f"Transcrito: \"{text[:80]}{'...' if len(text) > 80 else ''}\"")
+                st.rerun()
+        finally:
+            db_audio.close()
 
 if query:
     st.session_state.chat_history.append({"role": "user", "content": query})
@@ -85,7 +109,8 @@ if query:
     try:
         agent = ReportAgentService(db)
         with st.spinner("Analisando pergunta..."):
-            query_analysis = agent.analyze_query(query)
+            history = st.session_state.chat_history[:-1]
+            query_analysis = agent.analyze_query(query, conversation_history=history)
         if query_analysis.get("intent") == "error":
             st.session_state.chat_history.append({
                 "role": "assistant",
@@ -148,6 +173,17 @@ if query:
             rows = [
                 {
                     "Fornecedor": c["fornecedor"],
+                    "Vencimento": c["data_vencimento"],
+                    "Valor": format_currency(c["valor"]),
+                    "Status": c["status"],
+                }
+                for c in data["contas"]
+            ]
+            table_data = pd.DataFrame(rows)
+        elif qt == "contas_receber" and data.get("contas"):
+            rows = [
+                {
+                    "Cliente": c["cliente"],
                     "Vencimento": c["data_vencimento"],
                     "Valor": format_currency(c["valor"]),
                     "Status": c["status"],

@@ -80,6 +80,7 @@ def init_db():
         cash_session,
         sale,
         account_payable,
+        account_receivable,
         ai_config,
     )
 

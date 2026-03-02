@@ -29,12 +29,13 @@ def show_sidebar() -> None:
         st.page_link("pages/1_Produtos.py", label="Produtos", icon="📦")
         st.page_link("pages/4_Vendas.py", label="Vendas", icon="🧾")
         st.page_link("pages/7_Acessorios.py", label="Acessórios", icon="💎")
-        st.page_link("pages/5_Contas_a_Pagar.py", label="Contas a Pagar", icon="📄")
+        st.page_link("pages/5_Contas_a_Pagar.py", label="Contas a Pagar e a Receber", icon="📄")
         st.page_link("pages/3_Relatorios.py", label="Relatórios", icon="📈")
-        if role in ("admin", "gerente"):
+        if role == "admin":
             st.page_link("pages/Agente_Relatorios.py", label="Agente Relatórios", icon="🤖")
         if role == "admin":
             st.page_link("pages/10_Admin.py", label="Administração", icon="⚙️")
+        st.page_link("pages/11_Sobre.py", label="Sobre", icon="ℹ️")
 
         st.markdown("---")
         if st.button("Sair", use_container_width=True):
