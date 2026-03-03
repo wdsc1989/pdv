@@ -70,6 +70,29 @@ Com chave SSH:
 
 Depois do deploy, acesse **http://pdv.srv1140258.hstgr.cloud** e faça login com **admin** / **admin123** (altere em produção).
 
+### Redeploy rápido (após push para produção)
+
+Quando você já fez deploy uma vez e só quer **atualizar o código** (git pull + reiniciar o Streamlit), use o script de redeploy. Ele para o serviço, libera a porta 8501 se necessário e sobe de novo. **Não pede senha do banco.**
+
+Na pasta do projeto:
+
+```powershell
+cd C:\Users\DELL\Documents\Projetos\PDV
+.\scripts\Redeploy-PDV.ps1
+```
+
+Padrão: host `srv1140258.hstgr.cloud`, usuário `root`, app em `apps/pdv`. Para outro host/usuário:
+
+```powershell
+.\scripts\Redeploy-PDV.ps1 -VpsHost srv1140258.hstgr.cloud -SshUser root
+```
+
+Com chave SSH:
+
+```powershell
+.\scripts\Redeploy-PDV.ps1 -SshKeyPath "C:\caminho\para\sua_chave"
+```
+
 ---
 
 ## Índice (passo a passo manual)

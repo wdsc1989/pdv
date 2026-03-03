@@ -152,7 +152,10 @@ SYSTEMD_EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable pdv-streamlit
-sudo systemctl restart pdv-streamlit
+sudo systemctl stop pdv-streamlit 2>/dev/null || true
+sudo fuser -k 8501/tcp 2>/dev/null || true
+sleep 2
+sudo systemctl start pdv-streamlit
 
 echo ""
 echo "=== Deploy concluído ==="

@@ -116,11 +116,15 @@ Analise a pergunta do usuário e retorne APENAS um JSON válido (sem markdown, s
 }}
 
 Regras para period.type (use a data de hoje {data_hoje} como referência):
-- "hoje": apenas o dia de hoje
+- "hoje": SOMENTE quando o usuário pedir "hoje", "dia de hoje", "faturamento de hoje", sem mencionar outra data. Nunca use "hoje" se o usuário citar uma data específica.
+- "personalizado": quando o usuário citar UMA data específica (ex.: "faturamento de 02/03/2026", "vendas do dia 15/01/2026", "quanto vendi em 20/12/2025"). No Brasil as datas são DD/MM/AAAA. Ex.: 02/03/2026 = dia 2 de março de 2026 → start e end em YYYY-MM-DD: "2026-03-02". Sempre preencha start e end com a MESMA data nesse caso.
 - "ultimo_mes" ou "mensal": mês passado até hoje (ou "este mês" = primeiro dia do mês atual até hoje)
 - "semanal": últimos 7 dias
 - "geral": todo o histórico
 - "proximo_mes": mês que vem (primeiro ao último dia do mês seguinte à data de hoje). Use para "contas do próximo mês", "o que vence mês que vem", etc.
+
+**Data específica (OBRIGATÓRIO):** Se a pergunta mencionar uma data no formato DD/MM/AAAA (ex.: 02/03/2026, 15/01/2026), use type "personalizado" e preencha start e end com essa data em YYYY-MM-DD (02/03/2026 → start: "2026-03-02", end: "2026-03-02"). Não use "hoje" nem a data de hoje quando o usuário pedir outra data.
+Exemplo: "qual o faturamento de 02/03/2026" → data_type "resumo_periodo", type "personalizado", start "2026-03-02", end "2026-03-02".
 
 Regras para data_type:
 - "vendas" ou "resumo_periodo": totais de vendas, lucro, margem, ticket médio, número de vendas no período
@@ -230,13 +234,16 @@ Retorne APENAS o JSON."""
             except (ValueError, KeyError):
                 pass
 
-        if start_str and end_str and start_str != "null" and end_str != "null":
+        if start_str and str(start_str).strip().lower() not in ("null", ""):
             try:
-                return {
-                    "start": datetime.strptime(start_str, "%Y-%m-%d").date(),
-                    "end": datetime.strptime(end_str, "%Y-%m-%d").date(),
-                    "type": "personalizado",
-                }
+                start_date = datetime.strptime(str(start_str).strip()[:10], "%Y-%m-%d").date()
+                if end_str and str(end_str).strip().lower() not in ("null", ""):
+                    end_date = datetime.strptime(str(end_str).strip()[:10], "%Y-%m-%d").date()
+                else:
+                    end_date = start_date
+                if end_date < start_date:
+                    end_date = start_date
+                return {"start": start_date, "end": end_date, "type": "personalizado"}
             except ValueError:
                 pass
 
