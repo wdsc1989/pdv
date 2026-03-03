@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from models.account_payable import AccountPayable
@@ -57,6 +57,30 @@ SAZONALIDADE_ROUPAS_FEMININAS = {
     12: "Natal e Réveillon: vestidos de festa, moda noite; pico de vendas.",
 }
 
+# Schema do banco para o agente gerar consultas SQL quando necessário (apenas leitura)
+DB_SCHEMA = """
+Tabelas e colunas (use exatamente estes nomes em SQL):
+- sales: id, cash_session_id, data_venda (DATE), total_vendido, total_lucro, total_pecas, tipo_pagamento, status ('concluida'|'cancelada'), created_at
+- sale_items: id, sale_id (FK sales.id), product_id (FK products.id), quantidade, preco_unitario, preco_custo_unitario, subtotal, lucro_item
+- products: id, codigo, nome, categoria, marca, preco_custo, preco_venda, estoque_atual, estoque_minimo, imagem_path, ativo, categoria_id (FK product_categories.id), created_at, updated_at
+- product_categories: id, nome, descricao, ativo, created_at, updated_at
+- cash_sessions: id, data_abertura (DATETIME), data_fechamento, valor_abertura, valor_fechamento, status ('aberta'|'fechada'), observacao, created_at
+- accounts_payable: id, fornecedor, descricao, data_vencimento (DATE), data_pagamento, valor, status ('aberta'|'paga'|'atrasada'), observacao, created_at, updated_at
+- accounts_receivable: id, cliente, descricao, data_vencimento (DATE), data_recebimento, valor, status ('aberta'|'recebida'|'atrasada'), observacao, created_at, updated_at
+- stock_entries: id, product_id (FK products.id), quantity, data_entrada (DATE), observacao, created_at
+- users: id, username, name, role ('admin'|'gerente'|'vendedor'), active, created_at
+- accessory_stock: id, preco, quantidade
+- accessory_sales: id, data_venda (DATE), preco, quantidade, repasse_feito
+- accessory_stock_entries: id, data_entrada (DATE), preco, quantidade
+Relacionamentos: sales.cash_session_id -> cash_sessions.id; sale_items.sale_id -> sales.id, sale_items.product_id -> products.id; products.categoria_id -> product_categories.id; stock_entries.product_id -> products.id.
+"""
+
+ALLOWED_SQL_TABLES = frozenset({
+    "sales", "sale_items", "products", "product_categories", "cash_sessions",
+    "accounts_payable", "accounts_receivable", "stock_entries", "users",
+    "accessory_stock", "accessory_sales", "accessory_stock_entries",
+})
+
 
 class ReportAgentService:
     """
@@ -98,29 +122,42 @@ class ReportAgentService:
 
         prompt = f"""Você é um assistente de relatórios de PDV (ponto de venda). O sistema tem: vendas, estoque, sessões de caixa, contas a pagar, contas a receber (fiado), produtos mais vendidos e análises avançadas (tendências, previsões, sazonalidade).
 
+**ESTRUTURA DO BANCO (para consultas SQL customizadas):**
+{DB_SCHEMA}
+
 **LOCALIZAÇÃO NO TEMPO (obrigatório):** A data de HOJE é {data_hoje}. Use SEMPRE esta data para se localizar no tempo: "hoje", "ontem", "esta semana", "este mês", "mês passado", "próximo mês", "dia 10" (sem mês = mês atual), etc. Nunca invente outra data.
-**PERÍODO AMBÍGUO:** Se a pergunta for sobre faturamento, vendas, relatório, etc., mas NÃO mencionar nenhum período nem data (ex.: só "qual o faturamento?", "quanto vendi?", "me dá o resumo"), retorne intent "esclarecer_periodo" e preencha "clarification_message" com uma pergunta curta, por exemplo: "De qual período? (ex.: hoje, esta semana, dia 02/03/2026, este mês)".
+
+**PERGUNTAS QUE NÃO SÃO RELATÓRIO (resposta direta):** Se o usuário perguntar algo que NÃO é pedido de dados/relatório, responda com intent "resposta_direta" e preencha "resposta_direta" com a resposta curta. Exemplos: "que dia é hoje?" → resposta_direta: "Hoje é {data_hoje}.", "qual a data de hoje?" → "Hoje é {data_hoje}.", "que horas são?" → informe que você não tem acesso ao horário e sugira ver no dispositivo; "modelo de perguntas" / "que perguntas posso fazer?" → liste 3 a 5 exemplos curtos (ex.: faturamento de hoje, produtos mais vendidos da semana, contas a pagar do mês). NUNCA responda com "Qual a sua dúvida sobre o dia de hoje?" para "que dia é hoje?" — responda com a data.
+
+**CONTEXTO DE ESCLARECIMENTO (evitar loop):** Se no histórico a ÚLTIMA mensagem do Assistente for uma pergunta sobre o período (ex.: "De qual período?", "De qual período deseja o relatório?") e a mensagem ATUAL do usuário for uma resposta de período ("hoje", "esta semana", "este mês", "dia 15", etc.), o usuário ESTÁ respondendo à pergunta. Nesse caso: use intent "consulta", data_type "resumo_periodo", e period.type conforme a resposta: "hoje" → "hoje", "esta semana" → "semanal", "este mês" → use start/end do mês atual. NUNCA retorne esclarecer_periodo de novo quando o usuário acabou de informar o período.
+
+**PERÍODO AMBÍGUO (só quando não for resposta a esclarecimento):** Se a pergunta for sobre faturamento/vendas/relatório mas NÃO mencionar período E a última mensagem do assistente NÃO for perguntando o período, retorne intent "esclarecer_periodo" e "clarification_message" com "De qual período? (ex.: hoje, esta semana, dia 02/03/2026, este mês)".
 {history_block}
 Analise a pergunta do usuário e retorne APENAS um JSON válido (sem markdown, sem texto extra) com:
 {{
-    "intent": "consulta|resumo|relatorio|analise|esclarecer_periodo",
-    "data_type": "vendas|resumo_periodo|produtos_mais_vendidos|valor_estoque|entradas_estoque|sessoes_caixa|contas_pagar|analise_avancada",
+    "intent": "consulta|resumo|relatorio|analise|esclarecer_periodo|resposta_direta",
+    "data_type": "vendas|resumo_periodo|produtos_mais_vendidos|valor_estoque|entradas_estoque|sessoes_caixa|contas_pagar|contas_receber|analise_avancada|sql",
     "period": {{
         "start": "YYYY-MM-DD ou null",
         "end": "YYYY-MM-DD ou null",
-        "type": "hoje|ultimo_mes|mensal|semanal|geral|proximo_mes|personalizado",
+        "type": "hoje|ultimo_mes|mensal|mes_atual|semanal|geral|proximo_mes|personalizado",
         "month": "nome_do_mes ou null",
         "year": "YYYY ou null"
     }},
     "filters": {{}},
     "output_format": "resumo|tabela|completo",
-    "clarification_message": "null ou texto curto para perguntar o período ao usuário (quando intent for esclarecer_periodo)"
+    "clarification_message": "null ou texto curto para perguntar o período ao usuário (quando intent for esclarecer_periodo)",
+    "sql_query": "null ou UMA instrução SELECT (apenas quando data_type for 'sql')",
+    "resposta_direta": "null ou texto curto (OBRIGATÓRIO quando intent for resposta_direta: ex. 'Hoje é {data_hoje}.')"
 }}
+
+**Quando usar data_type "sql":** Use quando a pergunta exigir uma consulta que não se encaixa nos tipos pré-definidos: listagens customizadas (ex.: "produtos com estoque abaixo do mínimo"), contagens (ex.: "quantas vendas por dia"), agrupamentos por categoria/fornecedor, consultas que combinem várias tabelas de forma específica, ou qualquer pergunta que você resolver melhor com uma única instrução SELECT. Gere "sql_query" usando APENAS as tabelas e colunas listadas no schema; uma única instrução SELECT, sem ; no final. Para perguntas que já têm tipo definido (faturamento, produtos mais vendidos, contas a pagar, etc.), prefira o data_type correspondente e deixe sql_query null.
 
 Regras para period.type (use a data de hoje {data_hoje} como referência):
 - "hoje": SOMENTE quando o usuário pedir "hoje", "dia de hoje", "faturamento de hoje", sem mencionar outra data. Nunca use "hoje" se o usuário citar uma data específica.
 - "personalizado": quando o usuário citar UMA data específica (ex.: "faturamento de 02/03/2026", "vendas do dia 15/01/2026", "quanto vendi em 20/12/2025"). No Brasil as datas são DD/MM/AAAA. Ex.: 02/03/2026 = dia 2 de março de 2026 → start e end em YYYY-MM-DD: "2026-03-02". Sempre preencha start e end com a MESMA data nesse caso.
-- "ultimo_mes" ou "mensal": mês passado até hoje (ou "este mês" = primeiro dia do mês atual até hoje)
+- "ultimo_mes" ou "mensal": mês passado até hoje
+- "mes_atual": "este mês" = primeiro dia do mês atual até hoje
 - "semanal": últimos 7 dias
 - "geral": todo o histórico
 - "proximo_mes": mês que vem (primeiro ao último dia do mês seguinte à data de hoje). Use para "contas do próximo mês", "o que vence mês que vem", etc.
@@ -204,6 +241,13 @@ Retorne APENAS o JSON."""
 
     def _process_period(self, period_info: Dict) -> Dict[str, Any]:
         """Converte período em datas start/end."""
+        def _empty(val: Any) -> bool:
+            """True se o valor for None, string vazia ou a string 'null' (IA às vezes retorna 'null' como texto)."""
+            if val is None:
+                return True
+            s = str(val).strip().lower()
+            return s in ("", "null")
+
         period_type = period_info.get("type", "ultimo_mes")
         start_str = period_info.get("start")
         end_str = period_info.get("end")
@@ -214,6 +258,9 @@ Retorne APENAS o JSON."""
         # Tipos que sempre calculamos a partir da data de hoje (ignorar start/end da IA)
         if period_type == "hoje":
             return {"start": today, "end": today, "type": "hoje"}
+        if period_type == "mes_atual":
+            start = today.replace(day=1)
+            return {"start": start, "end": today, "type": "mes_atual"}
         if period_type == "proximo_mes":
             primeiro_proximo = (today.replace(day=1) + relativedelta(months=1))
             ultimo_proximo = primeiro_proximo.replace(day=monthrange(primeiro_proximo.year, primeiro_proximo.month)[1])
@@ -224,13 +271,16 @@ Retorne APENAS o JSON."""
         if period_type == "geral":
             return {"start": date(2000, 1, 1), "end": today, "type": "geral"}
 
-        if month_name and year_str:
+        if not _empty(month_name) and not _empty(year_str):
             month_map = {
                 "janeiro": 1, "fevereiro": 2, "março": 3, "abril": 4, "maio": 5, "junho": 6,
                 "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12,
             }
-            month_num = month_map.get((month_name or "").lower(), today.month)
-            year = int(year_str) if year_str else today.year
+            month_num = month_map.get(str(month_name).lower(), today.month)
+            try:
+                year = int(year_str)
+            except (ValueError, TypeError):
+                year = today.year
             try:
                 start = date(year, month_num, 1)
                 end = date(year, month_num, monthrange(year, month_num)[1])
@@ -258,6 +308,46 @@ Retorne APENAS o JSON."""
         start = (today - relativedelta(months=1)).replace(day=1)
         return {"start": start, "end": today, "type": "ultimo_mes"}
 
+    def _execute_sql_query(self, db: Session, sql_query: str) -> Dict[str, Any]:
+        """Executa uma única instrução SELECT após validar (apenas tabelas permitidas, só leitura)."""
+        if not sql_query or not isinstance(sql_query, str):
+            return {"type": "error", "error": "Consulta SQL não fornecida."}
+        sql = sql_query.strip()
+        if not sql.upper().startswith("SELECT"):
+            return {"type": "error", "error": "Apenas consultas SELECT são permitidas."}
+        if ";" in sql:
+            return {"type": "error", "error": "Use apenas uma instrução SELECT (sem ponto e vírgula)."}
+        # Extrai nomes de tabelas (FROM e JOIN)
+        from_match = re.findall(r"\bFROM\s+(\w+)\b", sql, re.IGNORECASE)
+        join_match = re.findall(r"\bJOIN\s+(\w+)\b", sql, re.IGNORECASE)
+        tables = [t.lower() for t in from_match + join_match]
+        invalid = [t for t in tables if t not in ALLOWED_SQL_TABLES]
+        if invalid:
+            return {"type": "error", "error": f"Tabela(s) não permitida(s): {', '.join(invalid)}."}
+        try:
+            result = db.execute(text(sql))
+            rows = result.fetchall()
+            columns = list(result.keys())
+            # Converte linhas em listas (valores serializáveis para JSON/DataFrame)
+            data_rows = []
+            for row in rows:
+                data_rows.append([self._serialize_cell(c) for c in row])
+            return {
+                "type": "sql_result",
+                "data": {"columns": columns, "rows": data_rows},
+            }
+        except Exception as e:
+            return {"type": "error", "error": f"Erro ao executar consulta: {str(e)}"}
+
+    @staticmethod
+    def _serialize_cell(val: Any) -> Any:
+        """Serializa célula para JSON/DataFrame (date/datetime -> str)."""
+        if val is None:
+            return None
+        if hasattr(val, "isoformat"):
+            return val.isoformat()
+        return val
+
     def execute_query(self, db: Session, query_analysis: Dict) -> Dict[str, Any]:
         """Executa a consulta ao banco conforme a análise da pergunta."""
         data_type = query_analysis.get("data_type")
@@ -266,6 +356,9 @@ Retorne APENAS o JSON."""
         end_date = period.get("end", date.today())
 
         try:
+            if data_type == "sql":
+                sql_query = query_analysis.get("sql_query") or ""
+                return self._execute_sql_query(db, sql_query)
             if data_type in ("vendas", "resumo_periodo"):
                 return self._query_resumo_periodo(db, start_date, end_date)
             if data_type == "produtos_mais_vendidos":
@@ -882,6 +975,12 @@ Retorne apenas o markdown da análise."""
         # Resumo/faturamento: sempre formatação fixa para resposta clara e consistente
         if query_type == "resumo_periodo":
             return self._format_response_simple(query_result, query_analysis)
+
+        # Resultado de consulta SQL customizada: texto curto + tabela exibida abaixo
+        if query_type == "sql_result":
+            data = query_result.get("data", {})
+            n = len(data.get("rows") or [])
+            return f"**Resultado da consulta** ({n} linha{'s' if n != 1 else ''}). Os dados são exibidos na tabela abaixo."
 
         if not self.ai_service.is_available():
             return self._format_response_simple(query_result, query_analysis)

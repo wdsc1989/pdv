@@ -127,6 +127,15 @@ if query:
                 "table_data": None,
             })
             st.rerun()
+        if query_analysis.get("intent") == "resposta_direta":
+            raw = query_analysis.get("resposta_direta")
+            msg = (raw if isinstance(raw, str) and raw.strip() else None) or "Não entendi. Você pode perguntar sobre faturamento, vendas, estoque, contas a pagar, etc."
+            st.session_state.chat_history.append({
+                "role": "assistant",
+                "content": msg,
+                "table_data": None,
+            })
+            st.rerun()
         with st.spinner("Consultando dados..."):
             query_result = agent.execute_query(db, query_analysis)
         if query_result.get("type") == "error":
@@ -200,6 +209,8 @@ if query:
                 for c in data["contas"]
             ]
             table_data = pd.DataFrame(rows)
+        elif qt == "sql_result" and data.get("columns") and data.get("rows") is not None:
+            table_data = pd.DataFrame(data["rows"], columns=data["columns"])
         st.session_state.chat_history.append({
             "role": "assistant",
             "content": response_text,
