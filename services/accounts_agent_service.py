@@ -280,7 +280,9 @@ Retorne APENAS o JSON."""
 
         intent = (parsed.get("intent") or "cadastrar").strip().lower()
         tipo = (parsed.get("tipo") or "").strip().lower()
-
+        # Na página Contas a Pagar, "dar baixa" sem tipo = conta a pagar
+        if intent == "dar_baixa" and tipo not in ("pagar", "receber") and context.get("pagina") == "contas_a_pagar":
+            tipo = "pagar"
         if intent == "dar_baixa":
             return self._resolve_baixa(tipo, parsed)
 

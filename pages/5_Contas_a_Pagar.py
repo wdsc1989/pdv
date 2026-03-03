@@ -397,16 +397,47 @@ try:
                     db_audio_ag.close()
 
         if query_ag:
+            # Se já há confirmação de baixa pendente e o usuário confirmou por texto, executar baixa sem chamar o agente
+            pending_baixa_now = st.session_state.get("accounts_pending_baixa")
+            confirm_phrases = ("sim", "confirmar", "confirmo", "dar baixa", "é para dar baixa", "pode dar", "quero", "ok", "okay", "pode ser", "isso", "isso mesmo", "correto", "quero dar baixa")
+            if pending_baixa_now and (query_ag.strip().lower() in confirm_phrases or query_ag.strip().lower().startswith("sim ")):
+                st.session_state.accounts_chat_history.append({"role": "user", "content": query_ag})
+                db_ag = SessionLocal()
+                try:
+                    agent = AccountsAgentService(db_ag)
+                    result = agent.execute_baixa(db_ag, pending_baixa_now)
+                    if result.get("success"):
+                        st.session_state.accounts_chat_history.append({
+                            "role": "assistant",
+                            "content": f"✅ {result.get('message', 'Baixa realizada.')}",
+                            "records": None,
+                        })
+                    else:
+                        st.session_state.accounts_chat_history.append({
+                            "role": "assistant",
+                            "content": f"❌ {result.get('message', 'Erro ao dar baixa.')}",
+                            "records": None,
+                        })
+                    st.session_state.accounts_pending_baixa = None
+                finally:
+                    db_ag.close()
+                st.rerun()
+
             st.session_state.accounts_chat_history.append({"role": "user", "content": query_ag})
             db_ag = SessionLocal()
             try:
                 agent = AccountsAgentService(db_ag)
                 with st.spinner("Interpretando pedido..."):
                     history_ag = st.session_state.accounts_chat_history[:-1]
-                    out = agent.parse_request(query_ag, conversation_history=history_ag)
+                    out = agent.parse_request(
+                        query_ag,
+                        conversation_history=history_ag,
+                        context={"pagina": "contas_a_pagar"},
+                    )
                 status = out.get("status", "error")
                 message = out.get("message", "")
                 records = out.get("records", [])
+                baixa = out.get("baixa")
 
                 if status == "need_info":
                     st.session_state.accounts_chat_history.append({
@@ -415,6 +446,15 @@ try:
                         "records": None,
                     })
                     st.session_state.accounts_pending_records = []
+                    st.session_state.accounts_pending_baixa = None
+                elif status == "confirm" and baixa:
+                    st.session_state.accounts_chat_history.append({
+                        "role": "assistant",
+                        "content": message,
+                        "records": None,
+                    })
+                    st.session_state.accounts_pending_baixa = baixa
+                    st.session_state.accounts_pending_records = []
                 elif status == "confirm" and records:
                     st.session_state.accounts_chat_history.append({
                         "role": "assistant",
@@ -422,6 +462,7 @@ try:
                         "records": records,
                     })
                     st.session_state.accounts_pending_records = records
+                    st.session_state.accounts_pending_baixa = None
                 else:
                     st.session_state.accounts_chat_history.append({
                         "role": "assistant",
@@ -429,6 +470,7 @@ try:
                         "records": None,
                     })
                     st.session_state.accounts_pending_records = []
+                    st.session_state.accounts_pending_baixa = None
             finally:
                 db_ag.close()
             st.rerun()
