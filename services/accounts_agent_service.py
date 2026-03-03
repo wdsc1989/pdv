@@ -185,7 +185,8 @@ class AccountsAgentService:
 
         prompt = f"""Você é um assistente que interpreta pedidos de cadastro de **contas a pagar** (fornecedores) e **contas a receber** (clientes / vendas fiado).
 
-**Data de hoje: {data_hoje}.** Use para interpretar "hoje", "amanhã", "dia 10", etc.
+**LOCALIZAÇÃO NO TEMPO (obrigatório):** A data de HOJE é {data_hoje}. Use SEMPRE esta data para se localizar: "hoje", "amanhã", "dia 10" (sem mês = dia 10 do mês atual), "próximo mês", etc. Datas no Brasil são DD/MM/AAAA (ex.: 05/02/2026 = 5 de fevereiro de 2026).
+**PERÍODO/DATA CONFUSA:** Se o usuário informar uma data ambígua (ex.: só "dia 10" sem mês/ano, ou "mês que vem" sem o dia), use a data de hoje como referência quando fizer sentido (ex.: "dia 10" = dia 10 do mês atual) ou preencha "clarification_questions" para perguntar o que faltar (ex.: "Para qual mês e ano é o vencimento?").
 {history_block}
 Estrutura dos dados:
 - **Conta a pagar:** fornecedor (obrigatório), descricao (opcional), valor (obrigatório), data_vencimento (obrigatório), observacao (opcional).

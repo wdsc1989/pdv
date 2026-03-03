@@ -118,6 +118,15 @@ if query:
                 "table_data": None,
             })
             st.rerun()
+        if query_analysis.get("intent") == "esclarecer_periodo":
+            raw = query_analysis.get("clarification_message")
+            msg = (raw if isinstance(raw, str) and raw.strip() else None) or "De qual período deseja o relatório? (ex.: hoje, esta semana, dia 02/03/2026, este mês)"
+            st.session_state.chat_history.append({
+                "role": "assistant",
+                "content": f"**{msg}**",
+                "table_data": None,
+            })
+            st.rerun()
         with st.spinner("Consultando dados..."):
             query_result = agent.execute_query(db, query_analysis)
         if query_result.get("type") == "error":

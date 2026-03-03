@@ -98,11 +98,12 @@ class ReportAgentService:
 
         prompt = f"""Você é um assistente de relatórios de PDV (ponto de venda). O sistema tem: vendas, estoque, sessões de caixa, contas a pagar, contas a receber (fiado), produtos mais vendidos e análises avançadas (tendências, previsões, sazonalidade).
 
-**IMPORTANTE: A data de HOJE é {data_hoje}.** Use SEMPRE esta data como referência para "hoje", "este mês", "próximo mês", "mês que vem", etc. Nunca invente ou use outra data.
+**LOCALIZAÇÃO NO TEMPO (obrigatório):** A data de HOJE é {data_hoje}. Use SEMPRE esta data para se localizar no tempo: "hoje", "ontem", "esta semana", "este mês", "mês passado", "próximo mês", "dia 10" (sem mês = mês atual), etc. Nunca invente outra data.
+**PERÍODO AMBÍGUO:** Se a pergunta for sobre faturamento, vendas, relatório, etc., mas NÃO mencionar nenhum período nem data (ex.: só "qual o faturamento?", "quanto vendi?", "me dá o resumo"), retorne intent "esclarecer_periodo" e preencha "clarification_message" com uma pergunta curta, por exemplo: "De qual período? (ex.: hoje, esta semana, dia 02/03/2026, este mês)".
 {history_block}
 Analise a pergunta do usuário e retorne APENAS um JSON válido (sem markdown, sem texto extra) com:
 {{
-    "intent": "consulta|resumo|relatorio|analise",
+    "intent": "consulta|resumo|relatorio|analise|esclarecer_periodo",
     "data_type": "vendas|resumo_periodo|produtos_mais_vendidos|valor_estoque|entradas_estoque|sessoes_caixa|contas_pagar|analise_avancada",
     "period": {{
         "start": "YYYY-MM-DD ou null",
@@ -112,7 +113,8 @@ Analise a pergunta do usuário e retorne APENAS um JSON válido (sem markdown, s
         "year": "YYYY ou null"
     }},
     "filters": {{}},
-    "output_format": "resumo|tabela|completo"
+    "output_format": "resumo|tabela|completo",
+    "clarification_message": "null ou texto curto para perguntar o período ao usuário (quando intent for esclarecer_periodo)"
 }}
 
 Regras para period.type (use a data de hoje {data_hoje} como referência):
@@ -125,6 +127,8 @@ Regras para period.type (use a data de hoje {data_hoje} como referência):
 
 **Data específica (OBRIGATÓRIO):** Se a pergunta mencionar uma data no formato DD/MM/AAAA (ex.: 02/03/2026, 15/01/2026), use type "personalizado" e preencha start e end com essa data em YYYY-MM-DD (02/03/2026 → start: "2026-03-02", end: "2026-03-02"). Não use "hoje" nem a data de hoje quando o usuário pedir outra data.
 Exemplo: "qual o faturamento de 02/03/2026" → data_type "resumo_periodo", type "personalizado", start "2026-03-02", end "2026-03-02".
+
+**Quando perguntar o período:** Use intent "esclarecer_periodo" e clarification_message quando a pergunta for vaga (ex.: "faturamento", "quanto vendi", "resumo" sem data/período). Assim o usuário pode responder "de hoje", "desta semana", "dia 02/03/2026", etc.
 
 Regras para data_type:
 - "vendas" ou "resumo_periodo": totais de vendas, lucro, margem, ticket médio, número de vendas no período
