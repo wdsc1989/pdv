@@ -49,6 +49,7 @@ def build_receipt_html(sale, itens_with_products: list, config: dict = None) -> 
 <meta charset="utf-8">
 <title>Recibo #{sale.id}</title>
 <style>
+  html {{ height: auto; min-height: 0; }}
   body {{
     width: {w_mm}mm;
     max-width: {width_px}px;
@@ -58,6 +59,8 @@ def build_receipt_html(sale, itens_with_products: list, config: dict = None) -> 
     padding: 8px;
     background: #fff;
     color: #000;
+    height: auto;
+    min-height: 0;
   }}
   .header {{ text-align: center; font-weight: bold; margin-bottom: 4px; }}
   .subheader {{ text-align: center; font-size: 0.9em; margin-bottom: 8px; }}
@@ -75,9 +78,21 @@ def build_receipt_html(sale, itens_with_products: list, config: dict = None) -> 
     border-radius: 4px;
   }}
   @media print {{
+    @page {{ size: {w_mm}mm auto; margin: {margin_mm}mm; }}
+    html, body {{
+      height: auto !important;
+      min-height: 0 !important;
+      margin: 0 !important;
+      padding: {margin_mm}mm !important;
+      overflow: visible !important;
+    }}
     body * {{ visibility: hidden; }}
     body, .receipt-content, .receipt-content * {{ visibility: visible; }}
-    .receipt-content {{ position: absolute; left: 0; top: 0; width: 100%; }}
+    .receipt-content {{
+      position: static !important;
+      width: 100%;
+      height: auto !important;
+    }}
     .no-print {{ display: none !important; }}
   }}
 </style>

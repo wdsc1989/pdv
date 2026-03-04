@@ -1,5 +1,5 @@
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +14,7 @@ from models.account_payable import AccountPayable
 from models.account_receivable import AccountReceivable
 from services.accounts_agent_service import AccountsAgentService
 from services.auth_service import AuthService
+from services.chat_memory import SCOPE_ACCOUNTS_AGENT, add_message, clear, get_messages
 from services.speech_to_text_service import transcribe_audio
 from utils.formatters import format_currency, format_date
 from utils.navigation import show_sidebar
@@ -28,6 +29,17 @@ def _format_venc(iso: str) -> str:
         return iso
 
 
+def _get_period(tipo: str) -> tuple[date, date]:
+    hoje = date.today()
+    if tipo == "Diário":
+        return hoje, hoje
+    if tipo == "Semanal":
+        return hoje - timedelta(days=6), hoje
+    if tipo == "Mensal":
+        return hoje.replace(day=1), hoje
+    return date(2000, 1, 1), hoje
+
+
 st.set_page_config(
     page_title="Contas a Pagar e a Receber",
     page_icon="📄",
@@ -36,6 +48,9 @@ st.set_page_config(
 
 AuthService.require_roles(["admin", "gerente"])
 show_sidebar()
+
+user = AuthService.get_current_user()
+current_user_id = user.get("id") if user else None
 
 st.markdown(
     "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>📄 Contas a Pagar e Contas a Receber</strong></p>"
@@ -48,13 +63,32 @@ st.markdown("---")
 
 db = SessionLocal()
 
-try:
-    tab_pagar, tab_receber, tab_agente = st.tabs(["Contas a Pagar", "Contas a Receber", "📋 Agente"])
+# Query params ou session_state: direcionamento a partir da Análise do dia (links ou botões)
+qp = st.query_params
+filtro_atraso = (qp.get("filtro") == "atraso") or st.session_state.pop("contas_filtro_atraso", False)
+tab_receber_primeiro = (qp.get("tab") == "receber") or st.session_state.pop("contas_tab_receber", False)
+tabs_labels = ["📋 Agente", "Contas a Pagar", "Contas a Receber", "📈 Relatórios"]
+if tab_receber_primeiro:
+    tabs_labels = ["Contas a Receber", "📋 Agente", "Contas a Pagar", "📈 Relatórios"]
+elif filtro_atraso:
+    tabs_labels = ["Contas a Pagar", "📋 Agente", "Contas a Receber", "📈 Relatórios"]
+tab_handles = st.tabs(tabs_labels)
+tab_agente = next((tab_handles[i] for i, l in enumerate(tabs_labels) if l == "📋 Agente"), tab_handles[0])
+tab_pagar = next((tab_handles[i] for i, l in enumerate(tabs_labels) if l == "Contas a Pagar"), tab_handles[1])
+tab_receber = next((tab_handles[i] for i, l in enumerate(tabs_labels) if l == "Contas a Receber"), tab_handles[2])
+tab_relatorios = next((tab_handles[i] for i, l in enumerate(tabs_labels) if l == "📈 Relatórios"), tab_handles[3])
 
+try:
     with tab_pagar:
+        if filtro_atraso and not tab_receber_primeiro:
+            st.caption("Mostrando apenas contas **em atraso**. Você veio do link da Análise do dia.")
         contas = db.execute(
             select(AccountPayable).order_by(AccountPayable.data_vencimento)
         ).scalars().all()
+        if filtro_atraso and not tab_receber_primeiro:
+            for c in contas:
+                c.update_status()
+            contas = [c for c in contas if c.status == "atrasada"]
         col_form, col_list = st.columns([1, 2])
         with col_form:
             edit_id_ap = st.session_state.get("edit_id_ap")
@@ -161,6 +195,12 @@ try:
         contas_r = db.execute(
             select(AccountReceivable).order_by(AccountReceivable.data_vencimento)
         ).scalars().all()
+        if tab_receber_primeiro and filtro_atraso:
+            for c in contas_r:
+                c.update_status()
+            contas_r = [c for c in contas_r if c.status == "atrasada"]
+            if contas_r:
+                st.caption("Mostrando apenas contas a receber **em atraso**. Você veio do link da Análise do dia.")
         col_form2, col_list2 = st.columns([1, 2])
         with col_form2:
             edit_id_ar = st.session_state.get("edit_id_ar")
@@ -277,6 +317,16 @@ try:
         if "accounts_pending_baixa" not in st.session_state:
             st.session_state.accounts_pending_baixa = None
 
+        if current_user_id is not None and len(st.session_state.accounts_chat_history) == 0:
+            db_load = SessionLocal()
+            try:
+                loaded = get_messages(db_load, current_user_id, SCOPE_ACCOUNTS_AGENT)
+                if loaded:
+                    st.session_state.accounts_chat_history = loaded
+                    st.rerun()
+            finally:
+                db_load.close()
+
         for msg in st.session_state.accounts_chat_history:
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -309,17 +359,23 @@ try:
                         agent = AccountsAgentService(db_ag)
                         result = agent.execute_baixa(db_ag, pending_baixa)
                         if result.get("success"):
+                            content = f"✅ {result.get('message', 'Baixa realizada.')}"
                             st.session_state.accounts_chat_history.append({
                                 "role": "assistant",
-                                "content": f"✅ {result.get('message', 'Baixa realizada.')}",
+                                "content": content,
                                 "records": None,
                             })
+                            if current_user_id is not None:
+                                add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", content, None)
                         else:
+                            content = f"❌ {result.get('message', 'Erro ao dar baixa.')}"
                             st.session_state.accounts_chat_history.append({
                                 "role": "assistant",
-                                "content": f"❌ {result.get('message', 'Erro ao dar baixa.')}",
+                                "content": content,
                                 "records": None,
                             })
+                            if current_user_id is not None:
+                                add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", content, None)
                         st.session_state.accounts_pending_baixa = None
                     finally:
                         db_ag.close()
@@ -327,11 +383,18 @@ try:
             with col_no:
                 if st.button("Não, cancelar", key="btn_cancel_baixa"):
                     st.session_state.accounts_pending_baixa = None
+                    content = "Baixa cancelada. Pode enviar um novo pedido."
                     st.session_state.accounts_chat_history.append({
                         "role": "assistant",
-                        "content": "Baixa cancelada. Pode enviar um novo pedido.",
+                        "content": content,
                         "records": None,
                     })
+                    if current_user_id is not None:
+                        db_cancel = SessionLocal()
+                        try:
+                            add_message(db_cancel, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", content, None)
+                        finally:
+                            db_cancel.close()
                     st.rerun()
             st.markdown("---")
 
@@ -404,20 +467,28 @@ try:
                 st.session_state.accounts_chat_history.append({"role": "user", "content": query_ag})
                 db_ag = SessionLocal()
                 try:
+                    if current_user_id is not None:
+                        add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "user", query_ag, None)
                     agent = AccountsAgentService(db_ag)
                     result = agent.execute_baixa(db_ag, pending_baixa_now)
                     if result.get("success"):
+                        content = f"✅ {result.get('message', 'Baixa realizada.')}"
                         st.session_state.accounts_chat_history.append({
                             "role": "assistant",
-                            "content": f"✅ {result.get('message', 'Baixa realizada.')}",
+                            "content": content,
                             "records": None,
                         })
+                        if current_user_id is not None:
+                            add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", content, None)
                     else:
+                        content = f"❌ {result.get('message', 'Erro ao dar baixa.')}"
                         st.session_state.accounts_chat_history.append({
                             "role": "assistant",
-                            "content": f"❌ {result.get('message', 'Erro ao dar baixa.')}",
+                            "content": content,
                             "records": None,
                         })
+                        if current_user_id is not None:
+                            add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", content, None)
                     st.session_state.accounts_pending_baixa = None
                 finally:
                     db_ag.close()
@@ -426,6 +497,8 @@ try:
             st.session_state.accounts_chat_history.append({"role": "user", "content": query_ag})
             db_ag = SessionLocal()
             try:
+                if current_user_id is not None:
+                    add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "user", query_ag, None)
                 agent = AccountsAgentService(db_ag)
                 with st.spinner("Interpretando pedido..."):
                     history_ag = st.session_state.accounts_chat_history[:-1]
@@ -445,6 +518,8 @@ try:
                         "content": message,
                         "records": None,
                     })
+                    if current_user_id is not None:
+                        add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", message, None)
                     st.session_state.accounts_pending_records = []
                     st.session_state.accounts_pending_baixa = None
                 elif status == "confirm" and baixa:
@@ -453,6 +528,8 @@ try:
                         "content": message,
                         "records": None,
                     })
+                    if current_user_id is not None:
+                        add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", message, None)
                     st.session_state.accounts_pending_baixa = baixa
                     st.session_state.accounts_pending_records = []
                 elif status == "confirm" and records:
@@ -461,14 +538,19 @@ try:
                         "content": message,
                         "records": records,
                     })
+                    if current_user_id is not None:
+                        add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", message, records)
                     st.session_state.accounts_pending_records = records
                     st.session_state.accounts_pending_baixa = None
                 else:
+                    fallback = message or "Não foi possível interpretar o pedido. Tente ser mais específico (quem, valor, data)."
                     st.session_state.accounts_chat_history.append({
                         "role": "assistant",
-                        "content": message or "Não foi possível interpretar o pedido. Tente ser mais específico (quem, valor, data).",
+                        "content": fallback,
                         "records": None,
                     })
+                    if current_user_id is not None:
+                        add_message(db_ag, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", fallback, None)
                     st.session_state.accounts_pending_records = []
                     st.session_state.accounts_pending_baixa = None
             finally:
@@ -477,10 +559,102 @@ try:
 
         st.markdown("---")
         if st.button("Limpar histórico", use_container_width=True, key="btn_clear_accounts"):
+            if current_user_id is not None:
+                db_clear = SessionLocal()
+                try:
+                    clear(db_clear, current_user_id, SCOPE_ACCOUNTS_AGENT)
+                finally:
+                    db_clear.close()
             st.session_state.accounts_chat_history = []
             st.session_state.accounts_pending_records = []
             st.session_state.accounts_pending_baixa = None
             st.rerun()
+
+    with tab_relatorios:
+        st.caption("Relatórios de contas a pagar e a receber por período (por vencimento).")
+        col_tipo_r, col_inicio_r, col_fim_r = st.columns([1, 1, 1])
+        with col_tipo_r:
+            tipo_periodo = st.selectbox(
+                "Período",
+                options=["Diário", "Semanal", "Mensal", "Geral"],
+                key="rel_periodo",
+                help="Diário = hoje; Semanal = últimos 7 dias; Mensal = mês atual; Geral = tudo.",
+            )
+        inicio_r, fim_r = _get_period(tipo_periodo)
+        with col_inicio_r:
+            data_inicio_r = st.date_input("Data inicial", value=inicio_r, key="rel_data_inicio")
+        with col_fim_r:
+            data_fim_r = st.date_input("Data final", value=fim_r, key="rel_data_fim")
+        st.markdown("---")
+
+        st.subheader("Contas a pagar no período (por vencimento)")
+        contas_pagar_r = (
+            db.query(AccountPayable)
+            .filter(AccountPayable.data_vencimento >= data_inicio_r)
+            .filter(AccountPayable.data_vencimento <= data_fim_r)
+            .order_by(AccountPayable.data_vencimento)
+            .all()
+        )
+        if not contas_pagar_r:
+            st.info("Nenhuma conta a pagar no período.")
+        else:
+            total_abertas_p = 0.0
+            total_pagas_p = 0.0
+            linhas_pagar = []
+            for c in contas_pagar_r:
+                c.update_status()
+                if c.status == "paga":
+                    total_pagas_p += c.valor
+                else:
+                    total_abertas_p += c.valor
+                linhas_pagar.append({
+                    "Fornecedor": c.fornecedor,
+                    "Vencimento": format_date(c.data_vencimento),
+                    "Pagamento": format_date(c.data_pagamento) if c.data_pagamento else "-",
+                    "Valor": format_currency(c.valor),
+                    "Status": c.status,
+                })
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                st.metric("Total em aberto", format_currency(total_abertas_p))
+            with col_p2:
+                st.metric("Total pagas", format_currency(total_pagas_p))
+            st.dataframe(linhas_pagar, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.subheader("Contas a receber no período (por vencimento)")
+        contas_receber_r = (
+            db.query(AccountReceivable)
+            .filter(AccountReceivable.data_vencimento >= data_inicio_r)
+            .filter(AccountReceivable.data_vencimento <= data_fim_r)
+            .order_by(AccountReceivable.data_vencimento)
+            .all()
+        )
+        if not contas_receber_r:
+            st.info("Nenhuma conta a receber no período.")
+        else:
+            total_abertas_r = 0.0
+            total_recebidas_r = 0.0
+            linhas_receber = []
+            for c in contas_receber_r:
+                c.update_status()
+                if c.status == "recebida":
+                    total_recebidas_r += c.valor
+                else:
+                    total_abertas_r += c.valor
+                linhas_receber.append({
+                    "Cliente": c.cliente,
+                    "Vencimento": format_date(c.data_vencimento),
+                    "Recebimento": format_date(c.data_recebimento) if c.data_recebimento else "-",
+                    "Valor": format_currency(c.valor),
+                    "Status": c.status,
+                })
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                st.metric("Total em aberto", format_currency(total_abertas_r))
+            with col_r2:
+                st.metric("Total recebidas", format_currency(total_recebidas_r))
+            st.dataframe(linhas_receber, use_container_width=True, hide_index=True)
 
 finally:
     db.close()

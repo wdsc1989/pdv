@@ -3,6 +3,7 @@ Serviço do agente de relatórios: interpreta perguntas em linguagem natural,
 executa consultas ao banco via ORM e formata respostas.
 Inclui análises avançadas: tendências, previsões, sazonalidade (dados + mercado) e notícias.
 """
+import copy
 import json
 import re
 from calendar import monthrange
@@ -22,6 +23,16 @@ from models.cash_session import CashSession
 from models.product import Product
 from models.sale import Sale, SaleItem
 from models.stock_entry import StockEntry
+from models.personal_agenda import PersonalAgenda
+from config.prompt_config import (
+    DEFAULTS,
+    KEY_ANALYZE_QUERY,
+    KEY_FORMAT_RESPONSE_ANALISE_AVANCADA,
+    KEY_FORMAT_RESPONSE_GENERIC,
+    KEY_INITIAL_ANALYSIS,
+    PromptConfigManager,
+    safe_substitute_prompt,
+)
 from services.ai_service import AIService
 from utils.formatters import format_currency, format_date
 
@@ -93,11 +104,15 @@ class ReportAgentService:
         self.ai_service = AIService(db)
 
     def analyze_query(
-        self, query: str, conversation_history: Optional[List[Dict[str, Any]]] = None
-    ) -> Dict[str, Any]:
+        self,
+        query: str,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        return_debug: bool = False,
+    ):
         """
         Analisa a pergunta em linguagem natural e retorna intent, data_type, period, etc.
         conversation_history: últimas mensagens (role + content) para manter contexto (mín. 5 conversas).
+        return_debug: se True, retorna {"analysis": ..., "debug": {"raw_json", "path", "final_json"}}.
         """
         if not self.ai_service.is_available():
             return {
@@ -108,7 +123,7 @@ class ReportAgentService:
         data_hoje = date.today().strftime("%d/%m/%Y")
         history_block = ""
         if conversation_history:
-            recent = conversation_history[-10:]
+            recent = conversation_history[-20:]
             lines = []
             for m in recent:
                 role = (m.get("role") or "user").strip().lower()
@@ -120,74 +135,16 @@ class ReportAgentService:
             if lines:
                 history_block = "\n\n**Histórico recente da conversa (use para manter o contexto do assunto):**\n" + "\n".join(lines) + "\n\n"
 
-        prompt = f"""Você é um assistente de relatórios de PDV (ponto de venda). O sistema tem: vendas, estoque, sessões de caixa, contas a pagar, contas a receber (fiado), produtos mais vendidos e análises avançadas (tendências, previsões, sazonalidade).
-
-**ESTRUTURA DO BANCO (para consultas SQL customizadas):**
-{DB_SCHEMA}
-
-**LOCALIZAÇÃO NO TEMPO (obrigatório):** A data de HOJE é {data_hoje}. Use SEMPRE esta data para se localizar no tempo: "hoje", "ontem", "esta semana", "este mês", "mês passado", "próximo mês", "dia 10" (sem mês = mês atual), etc. Nunca invente outra data.
-
-**PERGUNTAS QUE NÃO SÃO RELATÓRIO (resposta direta):** Se o usuário perguntar algo que NÃO é pedido de dados/relatório, responda com intent "resposta_direta" e preencha "resposta_direta" com a resposta curta. Exemplos: "que dia é hoje?" → resposta_direta: "Hoje é {data_hoje}.", "qual a data de hoje?" → "Hoje é {data_hoje}.", "que horas são?" → informe que você não tem acesso ao horário e sugira ver no dispositivo; "modelo de perguntas" / "que perguntas posso fazer?" → liste 3 a 5 exemplos curtos (ex.: faturamento de hoje, produtos mais vendidos da semana, contas a pagar do mês). NUNCA responda com "Qual a sua dúvida sobre o dia de hoje?" para "que dia é hoje?" — responda com a data.
-
-**CONTEXTO DE ESCLARECIMENTO (evitar loop):** Se no histórico a ÚLTIMA mensagem do Assistente for uma pergunta sobre o período (ex.: "De qual período?", "De qual período deseja o relatório?") e a mensagem ATUAL do usuário for uma resposta de período ("hoje", "esta semana", "este mês", "dia 15", etc.), o usuário ESTÁ respondendo à pergunta. Nesse caso: use intent "consulta", data_type "resumo_periodo", e period.type conforme a resposta: "hoje" → "hoje", "esta semana" → "semanal", "este mês" → use start/end do mês atual. NUNCA retorne esclarecer_periodo de novo quando o usuário acabou de informar o período.
-
-**PERÍODO AMBÍGUO (só quando não for resposta a esclarecimento):** Se a pergunta for sobre faturamento/vendas/relatório mas NÃO mencionar período E a última mensagem do assistente NÃO for perguntando o período, retorne intent "esclarecer_periodo" e "clarification_message" com "De qual período? (ex.: hoje, esta semana, dia 02/03/2026, este mês)".
-{history_block}
-Analise a pergunta do usuário e retorne APENAS um JSON válido (sem markdown, sem texto extra) com:
-{{
-    "intent": "consulta|resumo|relatorio|analise|esclarecer_periodo|resposta_direta",
-    "data_type": "vendas|resumo_periodo|produtos_mais_vendidos|valor_estoque|entradas_estoque|sessoes_caixa|contas_pagar|contas_receber|analise_avancada|sql",
-    "period": {{
-        "start": "YYYY-MM-DD ou null",
-        "end": "YYYY-MM-DD ou null",
-        "type": "hoje|ultimo_mes|mensal|mes_atual|semanal|geral|proximo_mes|personalizado",
-        "month": "nome_do_mes ou null",
-        "year": "YYYY ou null"
-    }},
-    "filters": {{}},
-    "output_format": "resumo|tabela|completo",
-    "clarification_message": "null ou texto curto para perguntar o período ao usuário (quando intent for esclarecer_periodo)",
-    "sql_query": "null ou UMA instrução SELECT (apenas quando data_type for 'sql')",
-    "resposta_direta": "null ou texto curto (OBRIGATÓRIO quando intent for resposta_direta: ex. 'Hoje é {data_hoje}.')"
-}}
-
-**Quando usar data_type "sql":** Use quando a pergunta exigir uma consulta que não se encaixa nos tipos pré-definidos: listagens customizadas (ex.: "produtos com estoque abaixo do mínimo"), contagens (ex.: "quantas vendas por dia"), agrupamentos por categoria/fornecedor, consultas que combinem várias tabelas de forma específica, ou qualquer pergunta que você resolver melhor com uma única instrução SELECT. Gere "sql_query" usando APENAS as tabelas e colunas listadas no schema; uma única instrução SELECT, sem ; no final. Para perguntas que já têm tipo definido (faturamento, produtos mais vendidos, contas a pagar, etc.), prefira o data_type correspondente e deixe sql_query null.
-
-Regras para period.type (use a data de hoje {data_hoje} como referência):
-- "hoje": SOMENTE quando o usuário pedir "hoje", "dia de hoje", "faturamento de hoje", sem mencionar outra data. Nunca use "hoje" se o usuário citar uma data específica.
-- "personalizado": quando o usuário citar UMA data específica (ex.: "faturamento de 02/03/2026", "vendas do dia 15/01/2026", "quanto vendi em 20/12/2025"). No Brasil as datas são DD/MM/AAAA. Ex.: 02/03/2026 = dia 2 de março de 2026 → start e end em YYYY-MM-DD: "2026-03-02". Sempre preencha start e end com a MESMA data nesse caso.
-- "ultimo_mes" ou "mensal": mês passado até hoje
-- "mes_atual": "este mês" = primeiro dia do mês atual até hoje
-- "semanal": últimos 7 dias
-- "geral": todo o histórico
-- "proximo_mes": mês que vem (primeiro ao último dia do mês seguinte à data de hoje). Use para "contas do próximo mês", "o que vence mês que vem", etc.
-
-**Data específica (OBRIGATÓRIO):** Se a pergunta mencionar uma data no formato DD/MM/AAAA (ex.: 02/03/2026, 15/01/2026), use type "personalizado" e preencha start e end com essa data em YYYY-MM-DD (02/03/2026 → start: "2026-03-02", end: "2026-03-02"). Não use "hoje" nem a data de hoje quando o usuário pedir outra data.
-Exemplo: "qual o faturamento de 02/03/2026" → data_type "resumo_periodo", type "personalizado", start "2026-03-02", end "2026-03-02".
-
-**Quando perguntar o período:** Use intent "esclarecer_periodo" e clarification_message quando a pergunta for vaga (ex.: "faturamento", "quanto vendi", "resumo" sem data/período). Assim o usuário pode responder "de hoje", "desta semana", "dia 02/03/2026", etc.
-
-Regras para data_type:
-- "vendas" ou "resumo_periodo": totais de vendas, lucro, margem, ticket médio, número de vendas no período
-- "produtos_mais_vendidos": top produtos por quantidade vendida no período
-- "valor_estoque": valor atual do estoque (custo e venda); não depende de período
-- "entradas_estoque": entradas de estoque no período (data, produto, quantidade)
-- "sessoes_caixa": sessões de caixa no período (abertura, fechamento, totais)
-- "contas_pagar": contas a pagar com vencimento no período
-- "contas_receber": contas a receber (vendas fiado, valores a receber de clientes) com vencimento no período
-- "analise_avancada": previsões, tendências de vendas, sazonalidade (histórico e mercado), notícias atuais. Use quando o usuário pedir: previsão, tendência, análise avançada, sazonalidade, comportamento das vendas, projeção, como está o mercado, notícias que impactam vendas.
-
-Se a pergunta for sobre "quanto vendi", "faturamento", "lucro do mês", "resumo do período" -> data_type: "resumo_periodo" ou "vendas".
-Se for "produtos mais vendidos", "o que mais vendeu" -> "produtos_mais_vendidos".
-Se for "valor do estoque", "quanto tenho em estoque" -> "valor_estoque".
-Se for "entradas de estoque", "o que entrou no estoque" -> "entradas_estoque".
-Se for "caixa", "sessões de caixa" -> "sessoes_caixa".
-Se for "contas a pagar", "o que vence", "contas do próximo mês", "contas mês que vem" -> "contas_pagar" e use period.type "proximo_mes" quando for sobre o mês seguinte.
-Se for "previsão de vendas", "tendência", "sazonalidade", "análise avançada", "como será o próximo mês", "comportamento do mercado", "notícias" -> data_type: "analise_avancada".
-
-**Pergunta atual do usuário:** {query}
-
-Retorne APENAS o JSON."""
+        template = PromptConfigManager.get_or_default(
+            self.db, KEY_ANALYZE_QUERY, DEFAULTS[KEY_ANALYZE_QUERY]
+        )
+        prompt = safe_substitute_prompt(
+            template,
+            DB_SCHEMA=DB_SCHEMA,
+            data_hoje=data_hoje,
+            history_block=history_block,
+            query=query,
+        )
 
         try:
             client, error = self.ai_service._get_client()
@@ -232,15 +189,328 @@ Retorne APENAS o JSON."""
                 result_text = re.sub(r"^```(?:json)?\s*", "", result_text, flags=re.MULTILINE)
                 result_text = re.sub(r"```\s*$", "", result_text, flags=re.MULTILINE)
             analysis = json.loads(result_text)
-            analysis["period"] = self._process_period(analysis.get("period", {}))
+            raw_analysis = copy.deepcopy(analysis) if return_debug else None
+            # Fallback: se a IA insistir em "esclarecer_periodo" mas o usuário já respondeu com o período (ex.: "do ano de 2026"), forçar consulta
+            analysis, period_applied = self._apply_period_clarification_fallback(analysis, query, conversation_history)
+            # Fallback: perguntas de continuação ("quais são?", "as contas a pagar") devem usar o assunto do histórico, não resposta_direta genérica
+            analysis, ref_applied = self._apply_referential_query_fallback(analysis, query, conversation_history)
+            # Fallback: quando o usuário responde ao "De qual período?" (ex.: "este mes") mas a IA retornou data_type errado (ex.: resumo_periodo em vez de contas_receber para "fiados"), corrigir
+            analysis, dt_override_applied = self._apply_period_reply_data_type_override(analysis, query, conversation_history)
+            period_raw = analysis.get("period")
+            analysis["period"] = self._process_period(period_raw if isinstance(period_raw, dict) else {})
+            if return_debug and raw_analysis is not None:
+                path_parts = ["Resposta da IA (JSON bruto)"]
+                if period_applied:
+                    path_parts.append("→ Fallback de período aplicado")
+                if ref_applied:
+                    path_parts.append("→ Fallback referencial aplicado")
+                if dt_override_applied:
+                    path_parts.append("→ Data_type corrigido por resposta de período")
+                return {
+                    "analysis": analysis,
+                    "debug": {
+                        "raw_json": raw_analysis,
+                        "path": " ".join(path_parts),
+                        "final_json": copy.deepcopy(analysis),
+                    },
+                }
             return analysis
         except json.JSONDecodeError as e:
             return {"intent": "error", "error": f"Erro ao interpretar resposta da IA: {str(e)}"}
         except Exception as e:
             return {"intent": "error", "error": f"Erro ao analisar pergunta: {str(e)}"}
 
+    def _apply_period_clarification_fallback(
+        self,
+        analysis: Dict[str, Any],
+        query: str,
+        conversation_history: Optional[List[Dict[str, Any]]],
+    ):
+        """
+        Se a IA retornou esclarecer_periodo mas o histórico mostra que o assistente
+        perguntou o período e o usuário acabou de responder (ex.: "do ano de 2026"),
+        forçar intent consulta com data_type inferido da pergunta anterior e period preenchido.
+        Retorna (analysis, applied: bool).
+        """
+        if analysis.get("intent") != "esclarecer_periodo":
+            return analysis, False
+        if not conversation_history or len(conversation_history) < 1:
+            return analysis, False
+
+        last_msg = conversation_history[-1]
+        last_role = (last_msg.get("role") or "").strip().lower()
+        last_content = (last_msg.get("content") or "").strip()
+        if last_role != "assistant" or "de qual período" not in last_content.lower():
+            return analysis, False
+
+        query_lower = (query or "").strip().lower()
+        if len(query_lower) > 120:
+            return analysis, False
+
+        # Parece resposta de período? (ano, 2026, hoje, este mês, etc.)
+        year_match = re.search(r"\b(19|20)\d{2}\b", query)
+        has_year = bool(year_match)
+        period_keywords = (
+            "ano atual" in query_lower or "este ano" in query_lower or "ano de " in query_lower
+            or "do ano" in query_lower or "o ano todo" in query_lower or "ano completo" in query_lower
+            or "hoje" in query_lower or "este mês" in query_lower or "esta semana" in query_lower
+            or query_lower.strip() in ("2026", "2025", "2024")
+        )
+        if not (has_year or period_keywords):
+            return analysis, False
+
+        # Inferir data_type da última pergunta do usuário no histórico
+        data_type = "resumo_periodo"
+        for m in reversed(conversation_history):
+            if (m.get("role") or "").strip().lower() != "user":
+                continue
+            prev = (m.get("content") or "").lower()
+            if "fiado" in prev or "contas a receber" in prev or "a receber" in prev:
+                data_type = "contas_receber"
+                break
+            if "contas a pagar" in prev:
+                data_type = "contas_pagar"
+                break
+            if "produtos mais vendidos" in prev or "mais vendidos" in prev:
+                data_type = "produtos_mais_vendidos"
+                break
+            if "entradas" in prev and "estoque" in prev:
+                data_type = "entradas_estoque"
+                break
+            if "sessões" in prev or "caixa" in prev:
+                data_type = "sessoes_caixa"
+                break
+            if "faturamento" in prev or "quanto vendi" in prev or "vendas" in prev or "resumo" in prev:
+                data_type = "resumo_periodo"
+                break
+            break
+
+        today = date.today()
+        year = today.year
+        if year_match:
+            try:
+                year = int(year_match.group(0))
+            except (ValueError, TypeError):
+                pass
+
+        if "hoje" in query_lower and "ano" not in query_lower and "mês" not in query_lower:
+            analysis["intent"] = "consulta"
+            analysis["data_type"] = data_type
+            analysis["period"] = {"start": today.isoformat(), "end": today.isoformat(), "type": "hoje"}
+            analysis["clarification_message"] = None
+            return analysis, True
+        if "este mês" in query_lower or "mes atual" in query_lower:
+            start = today.replace(day=1)
+            analysis["intent"] = "consulta"
+            analysis["data_type"] = data_type
+            analysis["period"] = {"start": start.isoformat(), "end": today.isoformat(), "type": "mes_atual"}
+            analysis["clarification_message"] = None
+            return analysis, True
+        if "esta semana" in query_lower:
+            start = today - relativedelta(days=6)
+            analysis["intent"] = "consulta"
+            analysis["data_type"] = data_type
+            analysis["period"] = {"start": start.isoformat(), "end": today.isoformat(), "type": "semanal"}
+            analysis["clarification_message"] = None
+            return analysis, True
+
+        # Ano (completo): "do ano de 2026", "2026", "ano atual", etc.
+        analysis["intent"] = "consulta"
+        analysis["data_type"] = data_type
+        analysis["period"] = {
+            "start": f"{year}-01-01",
+            "end": f"{year}-12-31",
+            "type": "anual",
+            "year": str(year),
+        }
+        analysis["clarification_message"] = None
+        return analysis, True
+
+    def _apply_period_reply_data_type_override(
+        self,
+        analysis: Dict[str, Any],
+        query: str,
+        conversation_history: Optional[List[Dict[str, Any]]],
+    ):
+        """
+        Quando o usuário responde ao "De qual período?" (ex.: "este mes") e a IA retornou
+        intent "consulta" mas com data_type errado (ex.: resumo_periodo em vez de contas_receber
+        quando o usuário tinha pedido "fiados"), corrigir data_type a partir da pergunta anterior.
+        Retorna (analysis, applied: bool).
+        """
+        if analysis.get("intent") != "consulta":
+            return analysis, False
+        if not conversation_history or len(conversation_history) < 1:
+            return analysis, False
+
+        last_msg = conversation_history[-1]
+        last_role = (last_msg.get("role") or "").strip().lower()
+        last_content = (last_msg.get("content") or "").strip()
+        if last_role != "assistant" or "de qual período" not in last_content.lower():
+            return analysis, False
+
+        query_lower = (query or "").strip().lower()
+        period_reply = (
+            "este mês" in query_lower or "este mes" in query_lower
+            or "esta semana" in query_lower or "hoje" in query_lower
+            or "ano atual" in query_lower or "este ano" in query_lower
+            or "o ano todo" in query_lower or re.search(r"\b(19|20)\d{2}\b", query)
+        )
+        if not period_reply:
+            return analysis, False
+
+        # Inferir data_type da última pergunta do usuário no histórico (antes da pergunta do assistente)
+        inferred_data_type = None
+        for m in reversed(conversation_history):
+            if (m.get("role") or "").strip().lower() != "user":
+                continue
+            prev = (m.get("content") or "").lower()
+            if "fiado" in prev or "contas a receber" in prev or "a receber" in prev:
+                inferred_data_type = "contas_receber"
+                break
+            if "contas a pagar" in prev:
+                inferred_data_type = "contas_pagar"
+                break
+            if "produtos mais vendidos" in prev or "mais vendidos" in prev:
+                inferred_data_type = "produtos_mais_vendidos"
+                break
+            if "entradas" in prev and "estoque" in prev:
+                inferred_data_type = "entradas_estoque"
+                break
+            if "sessões" in prev or "sessoes" in prev or "caixa" in prev:
+                inferred_data_type = "sessoes_caixa"
+                break
+            if "faturamento" in prev or "quanto vendi" in prev or "vendas" in prev or "resumo" in prev:
+                inferred_data_type = "resumo_periodo"
+                break
+            break
+
+        if inferred_data_type is None:
+            return analysis, False
+        current_data_type = analysis.get("data_type") or ""
+        if current_data_type == inferred_data_type:
+            return analysis, False
+
+        analysis["data_type"] = inferred_data_type
+        return analysis, True
+
+    def _apply_referential_query_fallback(
+        self,
+        analysis: Dict[str, Any],
+        query: str,
+        conversation_history: Optional[List[Dict[str, Any]]],
+    ):
+        """
+        Quando o usuário faz uma pergunta de continuação ("quais são?", "as contas a pagar", "lista", "mostre")
+        e a IA retornou resposta_direta genérica (ex.: "Você pode perguntar sobre..."), forçar intent consulta
+        com data_type inferido do histórico, para que o agente liste os dados em vez de dar dica de perguntas.
+        Retorna (analysis, applied: bool).
+        """
+        intent = analysis.get("intent", "")
+        query_stripped = (query or "").strip()
+        query_lower = query_stripped.lower()
+        if len(query_stripped) > 80:
+            return analysis, False
+
+        # Frases que indicam continuação do assunto (pedir lista/relatório do que já foi mencionado)
+        referential_phrases = (
+            "quais são",
+            "quais sao",
+            "quais?",
+            "lista",
+            "listar",
+            "mostre",
+            "mostra",
+            "me mostra",
+            "quero ver",
+            "e as contas",
+            "as contas a pagar",
+            "a contas a pagar",
+            "contas a pagar",
+            "contas a receber",
+            "dessa lista",
+            "desse relatório",
+            "desse relatorio",
+        )
+        is_referential = any(p in query_lower for p in referential_phrases) or query_lower in (
+            "quais são",
+            "quais",
+            "lista",
+            "mostre",
+            "mostra",
+        )
+        if not is_referential:
+            return analysis, False
+
+        # Só aplicar se a IA devolveu resposta_direta com texto genérico (ex.: "Você pode perguntar sobre...")
+        resposta = (analysis.get("resposta_direta") or "").strip().lower()
+        is_generic_reply = (
+            intent == "resposta_direta"
+            and (
+                "você pode perguntar" in resposta
+                or "pode perguntar sobre" in resposta
+                or "exemplos:" in resposta
+                or "faturamento de hoje" in resposta
+                or "produtos mais vendidos" in resposta
+            )
+        )
+        if not is_generic_reply and intent != "resposta_direta":
+            return analysis, False
+        if not conversation_history or len(conversation_history) < 1:
+            return analysis, False
+
+        # Inferir data_type do histórico (última pergunta do usuário ou última resposta do assistente)
+        data_type = None
+        for m in reversed(conversation_history):
+            content = (m.get("content") or "").lower()
+            role = (m.get("role") or "").strip().lower()
+            if "contas a pagar" in content or "quem devo pagar" in content or "contas a pagar" in query_lower:
+                data_type = "contas_pagar"
+                break
+            if "contas a receber" in content or "quem me deve" in content or "quem te deve" in content:
+                data_type = "contas_receber"
+                break
+            if "produtos mais vendidos" in content or "mais vendidos" in content:
+                data_type = "produtos_mais_vendidos"
+                break
+            if "entradas" in content and "estoque" in content:
+                data_type = "entradas_estoque"
+                break
+            if "sessões" in content or "sessoes" in content or "caixa" in content:
+                data_type = "sessoes_caixa"
+                break
+            if "faturamento" in content or "quanto vendi" in content or "vendas" in content or "resumo" in content:
+                data_type = "resumo_periodo"
+                break
+            if role == "assistant" and ("conta a pagar" in content or "contas a pagar" in content):
+                data_type = "contas_pagar"
+                break
+            if role == "assistant" and ("conta a receber" in content or "contas a receber" in content):
+                data_type = "contas_receber"
+                break
+
+        if not data_type:
+            return analysis, False
+
+        today = date.today()
+        # Forçar consulta com data_type do histórico. Para "quais são?" / "as contas a pagar" usar período sensível.
+        analysis["intent"] = "consulta"
+        analysis["data_type"] = data_type
+        analysis["resposta_direta"] = None
+        analysis["clarification_message"] = None
+        # Contas a pagar/receber: listar em aberto do mês atual; se o usuário quiser outro período, pode pedir depois
+        if data_type in ("contas_pagar", "contas_receber"):
+            start = today.replace(day=1)
+            analysis["period"] = {"start": start.isoformat(), "end": today.isoformat(), "type": "mes_atual", "month": None, "year": str(today.year)}
+        else:
+            analysis["period"] = {"start": today.isoformat(), "end": today.isoformat(), "type": "mes_atual", "month": None, "year": str(today.year)}
+        return analysis, True
+
     def _process_period(self, period_info: Dict) -> Dict[str, Any]:
         """Converte período em datas start/end."""
+        if period_info is None or not isinstance(period_info, dict):
+            period_info = {}
+
         def _empty(val: Any) -> bool:
             """True se o valor for None, string vazia ou a string 'null' (IA às vezes retorna 'null' como texto)."""
             if val is None:
@@ -270,6 +540,18 @@ Retorne APENAS o JSON."""
             return {"start": start, "end": today, "type": "semanal"}
         if period_type == "geral":
             return {"start": date(2000, 1, 1), "end": today, "type": "geral"}
+
+        # Ano completo: type "anual" com year (ex.: "ano completo", "este ano 2026")
+        if period_type == "anual" and not _empty(year_str):
+            try:
+                year = int(year_str)
+                return {
+                    "start": date(year, 1, 1),
+                    "end": date(year, 12, 31),
+                    "type": "anual",
+                }
+            except (ValueError, TypeError):
+                pass
 
         if not _empty(month_name) and not _empty(year_str):
             month_map = {
@@ -351,9 +633,17 @@ Retorne APENAS o JSON."""
     def execute_query(self, db: Session, query_analysis: Dict) -> Dict[str, Any]:
         """Executa a consulta ao banco conforme a análise da pergunta."""
         data_type = query_analysis.get("data_type")
-        period = query_analysis.get("period", {})
-        start_date = period.get("start", date.today() - relativedelta(months=1))
-        end_date = period.get("end", date.today())
+        period = query_analysis.get("period") or {}
+        if not isinstance(period, dict):
+            period = {}
+        default_start = date.today() - relativedelta(months=1)
+        default_end = date.today()
+        start_date = period.get("start") or default_start
+        end_date = period.get("end") or default_end
+        if not isinstance(start_date, date):
+            start_date = default_start
+        if not isinstance(end_date, date):
+            end_date = default_end
 
         try:
             if data_type == "sql":
@@ -720,7 +1010,7 @@ Retorne APENAS o JSON."""
             },
         }
 
-    def get_initial_analysis(self, db: Session) -> str:
+    def get_initial_analysis(self, db: Session, user_id: Optional[int] = None) -> str:
         """
         Gera a primeira análise ao abrir o Agente de Relatórios: tendência do dia,
         sazonalidade do mês (mercado de roupas femininas), pontos fortes e fracos.
@@ -820,7 +1110,36 @@ Retorne APENAS o JSON."""
         sazonalidade_moda = SAZONALIDADE_ROUPAS_FEMININAS.get(mes_atual, "")
         sazonalidade_proximo_mes = ""
         if proximo_virada_mes:
-            sazonalidade_proximo_mes = SAZONALIDADE_ROUPAS_FEMININAS.get(mes_proximo, SAZONALIDADE_MERCADO.get(mes_proximo, ""))
+            sazonalidade_proximo_mes = SAZONALIDADE_ROUPAS_FEMININAS.get(
+                mes_proximo, SAZONALIDADE_MERCADO.get(mes_proximo, "")
+            )
+
+        # Agenda pessoal: compromissos de hoje e próximos 7 dias
+        agenda_hoje_lista: List[Dict[str, Any]] = []
+        agenda_proximos_lista: List[Dict[str, Any]] = []
+        try:
+            limite_agenda = today + relativedelta(days=7)
+            q = db.query(PersonalAgenda).filter(
+                PersonalAgenda.data >= today, PersonalAgenda.data <= limite_agenda
+            )
+            if user_id is not None:
+                q = q.filter(PersonalAgenda.user_id == user_id)
+            compromissos = q.order_by(PersonalAgenda.data, PersonalAgenda.hora).limit(100).all()
+            for c in compromissos:
+                item = {
+                    "titulo": c.titulo,
+                    "descricao": c.descricao or "",
+                    "data": c.data.strftime("%d/%m/%Y"),
+                    "hora": c.hora or "",
+                }
+                if c.data == today:
+                    agenda_hoje_lista.append(item)
+                else:
+                    agenda_proximos_lista.append(item)
+        except Exception:
+            # Em caso de erro na agenda, apenas não incluir no payload
+            agenda_hoje_lista = []
+            agenda_proximos_lista = []
         payload = {
             "data_hoje": today.strftime("%d/%m/%Y"),
             "dia_do_mes": dia_do_mes,
@@ -845,42 +1164,25 @@ Retorne APENAS o JSON."""
             "contas_a_pagar_em_atraso": contas_atrasadas_lista,
             "contas_a_receber_em_atraso": contas_receber_atrasadas_lista,
             "contas_a_receber_proximas_15_dias": contas_receber_proximas_lista,
+            "agenda_hoje": agenda_hoje_lista,
+            "agenda_proximos_7_dias": agenda_proximos_lista,
+            "link_contas_pagar": "/5_Contas_a_Pagar".strip(),
+            "link_contas_pagar_atraso": "/5_Contas_a_Pagar?filtro=atraso".strip(),
+            "link_contas_receber_atraso": "/5_Contas_a_Pagar?tab=receber&filtro=atraso".strip(),
+            "link_contas_receber_proximas": "/5_Contas_a_Pagar?tab=receber".strip(),
+            "link_agenda": "/12_Agenda?aba=compromissos".strip(),
         }
         if not self.ai_service.is_available():
             return self._initial_analysis_fallback(payload)
-        prompt = f"""Você é um especialista em vendas e gestão de lojas de **roupas femininas** no Brasil. A análise é sempre em relação à **data de hoje** (data_hoje). Com base nos dados abaixo, elabore uma **Análise do dia** em português, em markdown, com tom profissional e acolhedor.
-
-**Regras obrigatórias:**
-- Seja fiel à data analisada: cite apenas datas comemorativas e eventos que ainda fazem sentido **a partir de hoje**. Se um evento já passou no calendário (ex.: Carnaval em fevereiro quando hoje já é março), **não** fale dele como oportunidade atual; foque no que está vigente ou por vir.
-- Quando "proximo_virada_mes" for true (fim do mês), inclua uma seção **"Insights para a semana que começa"** com o que esperar nos próximos 7 dias e na virada do mês, usando "sazonalidade_proximo_mes" para o mês que está entrando.
-
-Conteúdo:
-
-1. **Tendência para hoje**  
-   Com base no histórico de vendas por dia da semana (últimas 8 semanas), como costuma ser a performance nas {nome_hoje}s e o que esperar para hoje. Use os valores fornecidos.
-
-2. **Sazonalidade do mês (mercado de roupas femininas)**  
-   Comente **apenas** o que é relevante **a partir da data de hoje**: datas comemorativas que ainda vão acontecer neste mês, comportamento do consumidor atual, oportunidades. Não destaque eventos que já passaram.
-
-3. **Pontos fortes para o dia e para a semana**  
-   2 a 4 pontos fortes (dia de movimento, campanhas do período, estoque, horários de pico).
-
-4. **Contas a pagar**  
-   Liste as contas em "contas_a_pagar_abertas" (fornecedor, valor, data de vencimento, status). Se "contas_a_pagar_em_atraso" tiver itens, inclua um **alerta em destaque**: "⚠️ **Em atraso:**" e liste essas contas, pedindo para regularizar.
-
-5. **Contas a receber (fiado)**  
-   Exiba somente: (a) as em "contas_a_receber_em_atraso" e (b) as em "contas_a_receber_proximas_15_dias" (vencem nos próximos 15 dias). Para cada uma: cliente, valor, data de vencimento, status. Se "contas_a_receber_em_atraso" tiver itens, inclua **alerta**: "⚠️ **Em atraso (a cobrar):**" e liste essas contas.
-
-6. **Pontos de atenção / fracos**  
-   2 a 4 pontos (contas a pagar desta semana, contas a receber/fiado a cobrar, fluxo de caixa, pagamentos). Use "contas_a_pagar_esta_semana", "quantidade_contas_semana", "contas_a_receber_esta_semana" e "quantidade_contas_receber_semana" quando relevante.
-
-7. **Se "proximo_virada_mes" for true:** adicione a seção **Insights para a semana que começa** (de proxima_semana_inicio a proxima_semana_fim): o que esperar na virada do mês, sazonalidade do mês que entra ("sazonalidade_proximo_mes"), e dicas para se preparar.
-
-Use títulos curtos (## ou ###), listas e valores em R$ no padrão brasileiro. Seja objetivo e útil para a gestora da loja.
-
-Dados: {json.dumps(payload, default=str, ensure_ascii=False)}
-
-Retorne apenas o markdown da análise."""
+        template = PromptConfigManager.get_or_default(
+            self.db, KEY_INITIAL_ANALYSIS, DEFAULTS[KEY_INITIAL_ANALYSIS]
+        )
+        payload_json = json.dumps(payload, default=str, ensure_ascii=False)
+        prompt = safe_substitute_prompt(
+            template,
+            nome_hoje=nome_hoje,
+            payload=payload_json,
+        )
         try:
             client, error = self.ai_service._get_client()
             if error:
@@ -888,6 +1190,7 @@ Retorne apenas o markdown da análise."""
             config = self.ai_service.config
             provider = config["provider"]
             model = config.get("model", "")
+            result = ""
             if provider == "openai":
                 r = client.chat.completions.create(
                     model=model,
@@ -895,28 +1198,60 @@ Retorne apenas o markdown da análise."""
                     temperature=0.6,
                     max_tokens=900,
                 )
-                return (r.choices[0].message.content or "").strip()
-            if provider == "gemini":
+                result = (r.choices[0].message.content or "").strip()
+            elif provider == "gemini":
                 r = client.generate_content(prompt)
-                return (r.text or "").strip()
-            if provider == "groq":
+                result = (r.text or "").strip()
+            elif provider == "groq":
                 r = client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.6,
                     max_tokens=900,
                 )
-                return (r.choices[0].message.content or "").strip()
-            if provider == "ollama":
+                result = (r.choices[0].message.content or "").strip()
+            elif provider == "ollama":
                 r = client.chat(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     options={"temperature": 0.6, "num_predict": 900},
                 )
-                return (r.get("message", {}).get("content") or "").strip()
+                result = (r.get("message", {}).get("content") or "").strip()
+            if result:
+                result = re.sub(r"\]\(\s+", "](", result)
+                agenda_block = self._format_agenda_block(
+                    agenda_hoje_lista, agenda_proximos_lista
+                )
+                if agenda_block and "Compromissos pessoais" not in result:
+                    result = result + "\n\n" + agenda_block
+                return result
         except Exception:
             pass
         return self._initial_analysis_fallback(payload)
+
+    def _format_agenda_block(
+        self,
+        agenda_hoje_lista: List[Dict[str, Any]],
+        agenda_proximos_lista: List[Dict[str, Any]],
+    ) -> str:
+        """Retorna o bloco markdown dos compromissos da agenda (ou string vazia se não houver)."""
+        if not agenda_hoje_lista and not agenda_proximos_lista:
+            return ""
+        parts = ["**Compromissos pessoais (agenda):**\n\n"]
+        if agenda_hoje_lista:
+            parts.append("*Hoje:*\n")
+            for a in agenda_hoje_lista:
+                hora = a.get("hora") or ""
+                hora_txt = f" às {hora}" if hora else ""
+                parts.append(f"- {a.get('titulo', '')}{hora_txt} — {a.get('descricao', '')}\n")
+            parts.append("\n")
+        if agenda_proximos_lista:
+            parts.append("*Próximos 7 dias:*\n")
+            for a in agenda_proximos_lista:
+                hora = a.get("hora") or ""
+                hora_txt = f" às {hora}" if hora else ""
+                parts.append(f"- {a.get('data', '')} — {a.get('titulo', '')}{hora_txt} — {a.get('descricao', '')}\n")
+        return "".join(parts)
 
     def _initial_analysis_fallback(self, payload: Dict[str, Any]) -> str:
         """Fallback quando a IA não está disponível."""
@@ -935,34 +1270,52 @@ Retorne apenas o markdown da análise."""
         contas_atrasadas = payload.get("contas_a_pagar_em_atraso") or []
         if contas_atrasadas:
             bloco += "**⚠️ Em atraso:**\n\n"
-            for c in contas_atrasadas:
-                bloco += f"- {c.get('fornecedor', '')} — {format_currency(c.get('valor', 0))} — venc. {c.get('data_vencimento', '')}\n"
+            for i, c in enumerate(contas_atrasadas, 1):
+                bloco += f"{i}. **{c.get('fornecedor', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}\n"
             bloco += "\n"
         if contas_abertas:
             bloco += "**Contas a pagar (em aberto):**\n\n"
-            for c in contas_abertas:
+            for i, c in enumerate(contas_abertas, 1):
                 atraso = " — *atrasada*" if c.get("status") == "atrasada" else ""
-                bloco += f"- {c.get('fornecedor', '')} — {format_currency(c.get('valor', 0))} — venc. {c.get('data_vencimento', '')}{atraso}\n"
+                bloco += f"{i}. **{c.get('fornecedor', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}{atraso}\n"
             bloco += "\n"
         contas_rec_atrasadas = payload.get("contas_a_receber_em_atraso") or []
         contas_rec_proximas = payload.get("contas_a_receber_proximas_15_dias") or []
         if contas_rec_atrasadas:
             bloco += "**⚠️ Contas a receber em atraso (a cobrar):**\n\n"
-            for c in contas_rec_atrasadas:
-                bloco += f"- {c.get('cliente', '')} — {format_currency(c.get('valor', 0))} — venc. {c.get('data_vencimento', '')}\n"
+            for i, c in enumerate(contas_rec_atrasadas, 1):
+                bloco += f"{i}. **{c.get('cliente', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}\n"
             bloco += "\n"
         if contas_rec_proximas:
             bloco += "**Contas a receber (próximos 15 dias):**\n\n"
-            for c in contas_rec_proximas:
-                bloco += f"- {c.get('cliente', '')} — {format_currency(c.get('valor', 0))} — venc. {c.get('data_vencimento', '')}\n"
+            for i, c in enumerate(contas_rec_proximas, 1):
+                bloco += f"{i}. **{c.get('cliente', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}\n"
             bloco += "\n"
+        agenda_hoje = payload.get("agenda_hoje") or []
+        agenda_proximos = payload.get("agenda_proximos_7_dias") or []
+        if agenda_hoje or agenda_proximos:
+            bloco += "**Compromissos pessoais (agenda):**\n\n"
+            if agenda_hoje:
+                bloco += "*Hoje:*\n"
+                for a in agenda_hoje:
+                    hora = a.get("hora") or ""
+                    hora_txt = f" às {hora}" if hora else ""
+                    bloco += f"- **{a.get('titulo', '')}**{hora_txt} — {a.get('descricao', '')}\n"
+                bloco += "\n"
+            if agenda_proximos:
+                bloco += "*Próximos 7 dias:*\n"
+                for a in agenda_proximos:
+                    hora = a.get("hora") or ""
+                    hora_txt = f" às {hora}" if hora else ""
+                    bloco += f"- **{a.get('data', '')}** — {a.get('titulo', '')}{hora_txt} — {a.get('descricao', '')}\n"
+                bloco += "\n"
         if payload.get("proximo_virada_mes") and payload.get("sazonalidade_proximo_mes"):
             bloco += (
                 f"**Próxima semana** ({payload.get('proxima_semana_inicio', '')} a {payload.get('proxima_semana_fim', '')}): "
                 f"{payload.get('sazonalidade_proximo_mes', '')}\n\n"
             )
         bloco += "*Configure a IA em Administração para uma análise completa com pontos fortes e fracos.*"
-        return bloco
+        return re.sub(r"\]\(\s+", "](", bloco)
 
     def format_response(
         self, query_result: Dict, query_analysis: Dict, original_query: str
@@ -987,36 +1340,30 @@ Retorne apenas o markdown da análise."""
 
         data = query_result.get("data", {})
 
+        data_json = json.dumps(data, default=str, ensure_ascii=False)
         if query_type == "analise_avancada":
-            prompt = f"""Você é um analista de relatórios de PDV. Com base nos dados abaixo, elabore uma **análise avançada** em português, incluindo:
-
-1. **Tendência das vendas**: comente a variação percentual do período (crescimento ou queda) e o histórico mensal.
-2. **Previsão**: com base na previsão simples (média dos últimos meses) e na sazonalidade, indique o que esperar para o próximo período.
-3. **Sazonalidade nos dados**: comente em quais dias da semana as vendas são maiores/menores e o que isso sugere.
-4. **Sazonalidade do mercado**: use o texto "sazonalidade_mercado_periodo" para explicar o que é típico do período no varejo brasileiro.
-5. **Notícias atuais**: se houver "noticias_recentes", mencione brevemente como o contexto econômico pode impactar as vendas (sem inventar dados).
-
-Formate em markdown, com títulos curtos (## ou ###), listas e valores em R$ no padrão brasileiro. Seja objetivo e útil para o gestor.
-
-Pergunta do usuário: {original_query}
-
-Dados: {json.dumps(data, default=str, ensure_ascii=False)}
-
-Retorne a análise em markdown."""
+            template = PromptConfigManager.get_or_default(
+                self.db,
+                KEY_FORMAT_RESPONSE_ANALISE_AVANCADA,
+                DEFAULTS[KEY_FORMAT_RESPONSE_ANALISE_AVANCADA],
+            )
+            prompt = safe_substitute_prompt(
+                template,
+                original_query=original_query,
+                data=data_json,
+            )
         else:
-            prompt = f"""Você é um assistente de relatórios de PDV. Com base nos dados abaixo, responda de forma clara e objetiva em português à pergunta do usuário.
-
-Regras:
-- Responda apenas ao que foi perguntado.
-- Use valores em R$ no padrão brasileiro (ex: R$ 1.234,56).
-- Use markdown (negrito, listas) de forma leve.
-- Seja conciso (2-4 parágrafos no máximo para o corpo da resposta).
-
-Pergunta: {original_query}
-Tipo de dado: {query_type}
-Dados: {json.dumps(data, default=str, ensure_ascii=False)}
-
-Retorne a resposta em markdown."""
+            template = PromptConfigManager.get_or_default(
+                self.db,
+                KEY_FORMAT_RESPONSE_GENERIC,
+                DEFAULTS[KEY_FORMAT_RESPONSE_GENERIC],
+            )
+            prompt = safe_substitute_prompt(
+                template,
+                original_query=original_query,
+                query_type=query_type,
+                data=data_json,
+            )
 
         try:
             client, error = self.ai_service._get_client()

@@ -110,16 +110,15 @@ try:
 
     col_prod, col_cart = st.columns([1, 2])
 
-    # Passo 1: botão para abrir página de busca de produtos
     with col_prod:
-        st.subheader("Passo 1: Selecionar produto")
+        st.subheader("Adicionar itens")
         st.caption("Clique em **Buscar produto** para abrir o catálogo, escolher os itens e voltar com a sacola preenchida.")
 
         if st.button("🔍 Buscar produto", type="primary", use_container_width=True, key="btn_buscar_produto"):
             st.switch_page("pages/4a_Selecionar_Produtos.py")
 
     with col_cart:
-        st.subheader("Passo 2: Sacola e finalizar")
+        st.subheader("Resumo e finalização")
         cart = st.session_state.cart_items
         if not cart:
             st.info("Nenhum item na sacola. Adicione produtos na coluna à esquerda.")

@@ -82,6 +82,9 @@ def init_db():
         account_payable,
         account_receivable,
         ai_config,
+        agent_prompt,
+        agent_chat_memory,
+        personal_agenda,
     )
 
     Base.metadata.create_all(bind=engine)
@@ -220,5 +223,45 @@ def init_db():
             )
             if r.fetchone() is None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN signo VARCHAR(20)"))
+                conn.commit()
+
+    # Migração: tabela personal_agenda (SQLite)
+    if DATABASE_URL.startswith("sqlite"):
+        with engine.connect() as conn:
+            r = conn.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='personal_agenda'"
+                )
+            )
+            if r.fetchone() is None:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE personal_agenda (
+                            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER,
+                            titulo VARCHAR(200) NOT NULL,
+                            descricao VARCHAR(500),
+                            data DATE NOT NULL,
+                            hora VARCHAR(5),
+                            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                )
+                conn.commit()
+            # Índice em user_id (modelo tem index=True)
+            r = conn.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND name='ix_personal_agenda_user_id'"
+                )
+            )
+            if r.fetchone() is None:
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_personal_agenda_user_id ON personal_agenda (user_id)"
+                    )
+                )
                 conn.commit()
 

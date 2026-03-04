@@ -2,6 +2,7 @@
 Agente de cadastro de contas a pagar e a receber em linguagem natural.
 Interpreta pedidos, pede esclarecimentos quando faltam dados e confirma antes de inserir.
 Suporta cadastro em massa (ex.: todo dia 8 de cada mês de 2026).
+Respeita o histórico: quando o assistente perguntou algo e o usuário respondeu, usa a resposta (evita loop).
 """
 import json
 import re
@@ -12,6 +13,11 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from config.prompt_config import (
+    KEY_ACCOUNTS_AGENT_PARSE,
+    PromptConfigManager,
+    safe_substitute_prompt,
+)
 from models.account_payable import AccountPayable
 from models.account_receivable import AccountReceivable
 from services.ai_service import AIService
@@ -152,6 +158,95 @@ class AccountsAgentService:
             "baixa": {"tipo": tipo, "id": c.id, "label": label},
         }
 
+    def _apply_conversation_context_fallback(
+        self,
+        parsed: Dict[str, Any],
+        message: str,
+        conversation_history: Optional[List[Dict[str, Any]]],
+    ) -> None:
+        """
+        Quando a última mensagem do assistente foi uma pergunta (ex.: "Qual a descrição?")
+        e a mensagem atual do usuário é a resposta (ex.: "Conjunto Tati"), preenche o campo
+        no parsed para não perguntar de novo (evita loop). Mesma lógica do fallback de contexto
+        do agente de relatórios.
+        """
+        if not conversation_history or len(conversation_history) < 1:
+            return
+        last = conversation_history[-1]
+        if (last.get("role") or "").strip().lower() != "assistant":
+            return
+        last_content = (last.get("content") or "").lower()
+        current = (message or "").strip()
+        if not current:
+            return
+        # Resposta muito longa pode ser novo pedido, não só resposta à pergunta
+        if len(current) > 200:
+            return
+
+        tipo = (parsed.get("tipo") or "").strip().lower()
+
+        # Assistente perguntou descrição → usar mensagem atual como descricao
+        if ("descrição" in last_content or "descricao" in last_content or "qual a descri" in last_content) and not (parsed.get("descricao") or "").strip():
+            parsed["descricao"] = current
+            if "missing" in parsed and "descricao" in parsed["missing"]:
+                parsed["missing"] = [m for m in parsed["missing"] if m != "descricao"]
+            if "clarification_questions" in parsed:
+                parsed["clarification_questions"] = [q for q in parsed["clarification_questions"] if "descri" not in (q or "").lower()]
+
+        # Assistente perguntou fornecedor
+        if ("fornecedor" in last_content or "nome do fornecedor" in last_content) and tipo == "pagar" and not (parsed.get("fornecedor") or "").strip():
+            parsed["fornecedor"] = current
+            if "missing" in parsed and "fornecedor" in parsed["missing"]:
+                parsed["missing"] = [m for m in parsed["missing"] if m != "fornecedor"]
+            if "clarification_questions" in parsed:
+                parsed["clarification_questions"] = [q for q in parsed["clarification_questions"] if "fornecedor" not in (q or "").lower() and "quem" not in (q or "").lower()]
+
+        # Assistente perguntou cliente
+        if ("cliente" in last_content or "nome do cliente" in last_content) and tipo == "receber" and not (parsed.get("cliente") or "").strip():
+            parsed["cliente"] = current
+            if "missing" in parsed and "cliente" in parsed["missing"]:
+                parsed["missing"] = [m for m in parsed["missing"] if m != "cliente"]
+            if "clarification_questions" in parsed:
+                parsed["clarification_questions"] = [q for q in parsed["clarification_questions"] if "cliente" not in (q or "").lower()]
+
+        # Assistente perguntou valor → tentar extrair número
+        if ("valor" in last_content or "quanto" in last_content) and parsed.get("valor") is None:
+            try:
+                s = re.sub(r"r\$\s*", "", current, flags=re.IGNORECASE).replace(".", "").replace(",", ".").strip()
+                s = re.sub(r"[^\d.]", "", s)
+                if s:
+                    v = float(s)
+                    if v > 0:
+                        parsed["valor"] = v
+                        if "missing" in parsed and "valor" in parsed["missing"]:
+                            parsed["missing"] = [m for m in parsed["missing"] if m != "valor"]
+                        if "clarification_questions" in parsed:
+                            parsed["clarification_questions"] = [q for q in parsed["clarification_questions"] if "valor" not in (q or "").lower() and "quanto" not in (q or "").lower()]
+            except (ValueError, TypeError):
+                pass
+
+        # Assistente perguntou data/vencimento → tentar extrair data
+        if ("data" in last_content or "vencimento" in last_content or "quando" in last_content) and not parsed.get("data_vencimento"):
+            data_str = None
+            # YYYY-MM-DD
+            if re.match(r"\d{4}-\d{2}-\d{2}", current):
+                data_str = current[:10]
+            # DD/MM/YYYY ou D/M/YYYY
+            match_dm = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", current)
+            if match_dm:
+                d, m, y = int(match_dm.group(1)), int(match_dm.group(2)), int(match_dm.group(3))
+                if 1 <= m <= 12 and 1 <= d <= 31:
+                    try:
+                        data_str = date(y, m, d).isoformat()
+                    except ValueError:
+                        pass
+            if data_str:
+                parsed["data_vencimento"] = data_str
+                if "missing" in parsed and "data_vencimento" in parsed["missing"]:
+                    parsed["missing"] = [m for m in parsed["missing"] if m != "data_vencimento"]
+                if "clarification_questions" in parsed:
+                    parsed["clarification_questions"] = [q for q in parsed["clarification_questions"] if "data" not in (q or "").lower() and "vencimento" not in (q or "").lower() and "quando" not in (q or "").lower()]
+
     def parse_request(
         self,
         message: str,
@@ -183,48 +278,16 @@ class AccountsAgentService:
             if lines:
                 history_block = "\n\n**Histórico recente da conversa (use para manter o contexto até finalizar o cadastro/baixa):**\n" + "\n".join(lines) + "\n\n"
 
-        prompt = f"""Você é um assistente que interpreta pedidos de cadastro de **contas a pagar** (fornecedores) e **contas a receber** (clientes / vendas fiado).
-
-**LOCALIZAÇÃO NO TEMPO (obrigatório):** A data de HOJE é {data_hoje}. Use SEMPRE esta data para se localizar: "hoje", "amanhã", "dia 10" (sem mês = dia 10 do mês atual), "próximo mês", etc. Datas no Brasil são DD/MM/AAAA (ex.: 05/02/2026 = 5 de fevereiro de 2026).
-**PERÍODO/DATA CONFUSA:** Se o usuário informar uma data ambígua (ex.: só "dia 10" sem mês/ano, ou "mês que vem" sem o dia), use a data de hoje como referência quando fizer sentido (ex.: "dia 10" = dia 10 do mês atual) ou preencha "clarification_questions" para perguntar o que faltar (ex.: "Para qual mês e ano é o vencimento?").
-{history_block}
-Estrutura dos dados:
-- **Conta a pagar:** fornecedor (obrigatório), descricao (opcional), valor (obrigatório), data_vencimento (obrigatório), observacao (opcional).
-- **Conta a receber:** cliente (obrigatório), descricao (opcional), valor (obrigatório), data_vencimento (obrigatório), observacao (opcional).
-
-**Cadastro em massa:** o usuário pode pedir várias datas de uma vez, por exemplo:
-- "todo dia 8 dos meses do ano de 2026" → bulk: dia 8, todos os meses de 2026.
-- "cadastre aluguel todo dia 5 de janeiro a dezembro de 2026" → conta a pagar, fornecedor/descrição aluguel, valor (se informado), bulk dia 5, meses 1 a 12, ano 2026.
-- "conta de luz mensal no dia 15 de cada mês em 2026" → bulk: dia 15, meses 1-12, ano 2026.
-
-Analise a mensagem do usuário e retorne APENAS um JSON válido (sem markdown, sem texto extra):
-
-{{
-  "intent": "cadastrar ou dar_baixa",
-  "tipo": "pagar ou receber",
-  "fornecedor": "nome do fornecedor ou null",
-  "cliente": "nome do cliente ou null",
-  "descricao": "descrição opcional ou null",
-  "valor": número (ex: 120.50) ou null,
-  "data_vencimento": "YYYY-MM-DD para data única ou null",
-  "observacao": "texto opcional ou null",
-  "bulk": null ou {{ "dia": 8, "mes_inicio": 1, "mes_fim": 12, "ano": 2026 }},
-  "missing": [],
-  "clarification_questions": []
-}}
-
-**Intent "dar_baixa":** quando o usuário quiser marcar como paga/recebida uma conta já existente. Exemplos: "dar baixa na conta do João", "marcar como paga a conta de energia", "recebi da Maria", "paguei o aluguel de 800 reais". Retorne intent "dar_baixa", tipo "pagar" ou "receber", "fornecedor" ou "cliente" com o nome (ou parte) para buscar, e se o usuário mencionar **valor** (ex: "conta de 120 reais", "os 800 do aluguel") preencha "valor" para identificar a conta mais próxima do pedido. Os outros campos podem ser null.
-
-**Intent "cadastrar":** quando o usuário quiser cadastrar nova conta (já explicado abaixo).
-
-Regras:
-- "dar baixa", "marcar como paga", "marcar como recebida", "paguei", "recebi", "quitar", "baixa na conta" -> intent "dar_baixa". Tipo "pagar" ou "receber" conforme o contexto; fornecedor ou cliente com o nome (ou termo de busca).
-- Cadastro: tipo "pagar" (fornecedor, aluguel, luz) ou "receber" (cliente, fiado). Datas: "05/02/2026" -> "2026-02-05". Bulk: "todo dia 8 dos meses de 2026" -> bulk.
-- Se intent cadastrar e faltar informação, preencha "missing" e "clarification_questions".
-
-**Mensagem atual do usuário:** {message}
-
-Retorne APENAS o JSON."""
+        template = PromptConfigManager.get_or_default(
+            self.db, KEY_ACCOUNTS_AGENT_PARSE,
+            PromptConfigManager.get_default(KEY_ACCOUNTS_AGENT_PARSE),
+        )
+        prompt = safe_substitute_prompt(
+            template,
+            data_hoje=data_hoje,
+            history_block=history_block,
+            message=message,
+        )
 
         if not self.ai_service.is_available():
             return {
@@ -278,6 +341,9 @@ Retorne APENAS o JSON."""
         except Exception as e:
             return {"status": "error", "message": str(e), "questions": [], "records": []}
 
+        # Fallback: usar a resposta atual do usuário como preenchimento quando a última mensagem do assistente foi uma pergunta (evita loop)
+        self._apply_conversation_context_fallback(parsed, message, conversation_history)
+
         intent = (parsed.get("intent") or "cadastrar").strip().lower()
         tipo = (parsed.get("tipo") or "").strip().lower()
         # Na página Contas a Pagar, "dar baixa" sem tipo = conta a pagar
@@ -318,6 +384,11 @@ Retorne APENAS o JSON."""
                 missing.append("cliente")
             if not any("cliente" in (q or "").lower() for q in questions):
                 questions.append("Qual o nome do cliente (conta a receber)?")
+        if not descricao:
+            if "descricao" not in missing:
+                missing.append("descricao")
+            if not any("descri" in (q or "").lower() for q in questions):
+                questions.append("Qual a descrição da conta? (ex.: Conjunto Tati, Energia, Aluguel)")
         if valor is None or valor <= 0:
             if "valor" not in missing:
                 missing.append("valor")
@@ -370,18 +441,19 @@ Retorne APENAS o JSON."""
 
         # Resumo para confirmação
         n = len(records)
+        desc_label = (records[0].get("descricao") or "").strip() or "—"
         if n == 1:
             r = records[0]
             if tipo == "pagar":
-                msg = f"**Conta a pagar:** {r['fornecedor']} — {self._fmt_currency(r['valor'])} — venc. {self._fmt_date(r['data_vencimento'])}"
+                msg = f"**Conta a pagar:** {r['fornecedor']} — {desc_label} — {self._fmt_currency(r['valor'])} — venc. {self._fmt_date(r['data_vencimento'])}"
             else:
-                msg = f"**Conta a receber:** {r['cliente']} — {self._fmt_currency(r['valor'])} — venc. {self._fmt_date(r['data_vencimento'])}"
+                msg = f"**Conta a receber:** {r['cliente']} — {desc_label} — {self._fmt_currency(r['valor'])} — venc. {self._fmt_date(r['data_vencimento'])}"
         else:
             r0 = records[0]
             if tipo == "pagar":
-                msg = f"**{n} contas a pagar:** {r0['fornecedor']} — {self._fmt_currency(r0['valor'])} — vencimentos: {self._fmt_date(records[0]['data_vencimento'])} a {self._fmt_date(records[-1]['data_vencimento'])}"
+                msg = f"**{n} contas a pagar:** {r0['fornecedor']} — {desc_label} — {self._fmt_currency(r0['valor'])} — vencimentos: {self._fmt_date(records[0]['data_vencimento'])} a {self._fmt_date(records[-1]['data_vencimento'])}"
             else:
-                msg = f"**{n} contas a receber:** {r0['cliente']} — {self._fmt_currency(r0['valor'])} — vencimentos: {self._fmt_date(records[0]['data_vencimento'])} a {self._fmt_date(records[-1]['data_vencimento'])}"
+                msg = f"**{n} contas a receber:** {r0['cliente']} — {desc_label} — {self._fmt_currency(r0['valor'])} — vencimentos: {self._fmt_date(records[0]['data_vencimento'])} a {self._fmt_date(records[-1]['data_vencimento'])}"
         msg += "\n\n**Confirma o cadastro?**"
 
         return {

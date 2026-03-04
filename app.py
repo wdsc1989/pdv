@@ -77,9 +77,13 @@ def home_page():
 
     user = AuthService.get_current_user()
 
-    st.markdown("# 🏠 Início")
-    if user:
-        st.markdown(f"Olá, **{user['name']}**! Use o menu ao lado para navegar.")
+    st.markdown(
+        "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>🏠 Início</strong></p>"
+        "<p style='margin:0; font-size:0.8rem; color:#666;'>"
+        + (f"Olá, {user['name']}! Use o menu ao lado para navegar." if user else "")
+        + "</p>",
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
 
     # Horóscopo: cache por dia (signo + data); ao mudar o dia ou signo, busca de novo (economiza tokens de IA)
@@ -125,43 +129,11 @@ def home_page():
         finally:
             db.close()
 
-    # Análise do dia (Agente de Relatórios) — somente para administradores
+    # Agente de Relatórios (conversa + análise do dia) — somente para administradores
     if user and user.get("role") == "admin":
-        hoje = date.today().isoformat()
-        user_id = user.get("id")
-        cache_agente = st.session_state.get("agente_analysis_cache")
-        if (
-            cache_agente
-            and cache_agente.get("date") == hoje
-            and cache_agente.get("user_id") == user_id
-            and cache_agente.get("text")
-        ):
-            analysis_text = cache_agente["text"]
-        else:
-            if cache_agente and (cache_agente.get("date") != hoje or cache_agente.get("user_id") != user_id):
-                st.session_state.pop("agente_analysis_cache", None)
-            db_agente = SessionLocal()
-            try:
-                from services.report_agent_service import ReportAgentService
+        from utils.agente_relatorios_ui import render_agente_relatorios_ui
 
-                agent = ReportAgentService(db_agente)
-                with st.spinner("Preparando análise do dia..."):
-                    analysis_text = agent.get_initial_analysis(db_agente)
-                if analysis_text:
-                    st.session_state["agente_analysis_cache"] = {
-                        "date": hoje,
-                        "user_id": user_id,
-                        "text": analysis_text,
-                    }
-            except Exception:
-                analysis_text = ""
-            finally:
-                db_agente.close()
-        if analysis_text:
-            st.markdown("#### 🤖 Análise do dia (Agente de Relatórios)")
-            st.markdown(analysis_text)
-            st.page_link("pages/Agente_Relatorios.py", label="Abrir Agente de Relatórios para mais perguntas", icon="🤖")
-            st.markdown("---")
+        render_agente_relatorios_ui()
 
 
 def main():

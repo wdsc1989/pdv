@@ -24,10 +24,10 @@ from utils.formatters import format_currency
 from utils.navigation import show_sidebar
 
 
-def _comprimir_imagem(img_bytes: bytes, max_tamanho: int = 800, qualidade: int = 82) -> bytes:
+def _comprimir_imagem(img_bytes: bytes, max_tamanho: int = 1200, qualidade: int = 88) -> bytes:
     """
     Comprime imagem para economia de espaço. Redimensiona e salva em JPEG.
-    Ideal para fotos de celular que costumam ser muito grandes.
+    Ideal para fotos de celular (maior lado até max_tamanho px, qualidade JPEG 88).
     """
     try:
         img = Image.open(io.BytesIO(img_bytes))
@@ -298,13 +298,17 @@ try:
             st.metric("Margem de lucro (%)", f"{margem:.2f}%")
 
         with st.expander("Imagem do produto (opcional)"):
-            st.caption("Tire uma foto pelo celular ou envie um arquivo. A imagem será compactada automaticamente.")
+            st.caption(
+                "Segure o celular na vertical (retrato) para tirar a foto. "
+                "Ou envie um arquivo. A imagem será compactada automaticamente."
+            )
             col_cam, col_upload = st.columns(2)
             with col_cam:
                 foto_camera = st.camera_input(
                     "Tirar foto",
                     key=f"cad_camera_{form_version}",
                     disabled=not can_edit,
+                    help="Segure o celular na vertical (retrato) para melhor enquadramento do produto.",
                 )
             with col_upload:
                 arquivo_upload = st.file_uploader(

@@ -32,7 +32,7 @@ def show_sidebar() -> None:
         st.page_link("pages/5_Contas_a_Pagar.py", label="Contas a Pagar e a Receber", icon="📄")
         st.page_link("pages/3_Relatorios.py", label="Relatórios", icon="📈")
         if role == "admin":
-            st.page_link("pages/Agente_Relatorios.py", label="Agente Relatórios", icon="🤖")
+            st.page_link("pages/12_Agenda.py", label="Agenda Pessoal", icon="📅")
         if role == "admin":
             st.page_link("pages/10_Admin.py", label="Administração", icon="⚙️")
         st.page_link("pages/11_Sobre.py", label="Sobre", icon="ℹ️")

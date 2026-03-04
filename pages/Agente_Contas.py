@@ -17,6 +17,7 @@ import streamlit as st
 from config.database import SessionLocal
 from services.accounts_agent_service import AccountsAgentService
 from services.auth_service import AuthService
+from services.chat_memory import SCOPE_ACCOUNTS_AGENT, add_message, clear, get_messages
 from services.speech_to_text_service import transcribe_audio
 from utils.formatters import format_currency, format_date
 from utils.navigation import show_sidebar
@@ -59,6 +60,20 @@ if "accounts_chat_history" not in st.session_state:
 if "accounts_pending_records" not in st.session_state:
     st.session_state.accounts_pending_records = []
 
+user = AuthService.get_current_user()
+current_user_id = user.get("id") if user else None
+
+# Carregar histórico do banco quando está vazio (ex.: após refresh)
+if current_user_id is not None and len(st.session_state.accounts_chat_history) == 0:
+    db_load = SessionLocal()
+    try:
+        loaded = get_messages(db_load, current_user_id, SCOPE_ACCOUNTS_AGENT)
+        if loaded:
+            st.session_state.accounts_chat_history = loaded
+            st.rerun()
+    finally:
+        db_load.close()
+
 for msg in st.session_state.accounts_chat_history:
     role = msg.get("role", "user")
     content = msg.get("content", "")
@@ -90,17 +105,23 @@ if pending:
                 agent = AccountsAgentService(db)
                 result = agent.execute_insert(db, pending)
                 if result.get("success"):
+                    content = f"✅ {result.get('message', 'Cadastro realizado.')}"
                     st.session_state.accounts_chat_history.append({
                         "role": "assistant",
-                        "content": f"✅ {result.get('message', 'Cadastro realizado.')}",
+                        "content": content,
                         "records": None,
                     })
+                    if current_user_id is not None:
+                        add_message(db, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", content, None)
                 else:
+                    content = f"❌ {result.get('message', 'Erro ao cadastrar.')}"
                     st.session_state.accounts_chat_history.append({
                         "role": "assistant",
-                        "content": f"❌ {result.get('message', 'Erro ao cadastrar.')}",
+                        "content": content,
                         "records": None,
                     })
+                    if current_user_id is not None:
+                        add_message(db, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", content, None)
                 st.session_state.accounts_pending_records = []
             finally:
                 db.close()
@@ -108,11 +129,18 @@ if pending:
     with col_no:
         if st.button("Não, cancelar", key="btn_cancel_contas"):
             st.session_state.accounts_pending_records = []
+            content = "Cadastro cancelado. Pode enviar um novo pedido."
             st.session_state.accounts_chat_history.append({
                 "role": "assistant",
-                "content": "Cadastro cancelado. Pode enviar um novo pedido.",
+                "content": content,
                 "records": None,
             })
+            if current_user_id is not None:
+                db_cancel = SessionLocal()
+                try:
+                    add_message(db_cancel, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", content, None)
+                finally:
+                    db_cancel.close()
             st.rerun()
     st.markdown("---")
 
@@ -144,6 +172,8 @@ if query:
     st.session_state.accounts_chat_history.append({"role": "user", "content": query})
     db = SessionLocal()
     try:
+        if current_user_id is not None:
+            add_message(db, current_user_id, SCOPE_ACCOUNTS_AGENT, "user", query, None)
         agent = AccountsAgentService(db)
         with st.spinner("Interpretando pedido..."):
             history = st.session_state.accounts_chat_history[:-1]
@@ -158,6 +188,8 @@ if query:
                 "content": message,
                 "records": None,
             })
+            if current_user_id is not None:
+                add_message(db, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", message, None)
             st.session_state.accounts_pending_records = []
         elif status == "confirm" and records:
             st.session_state.accounts_chat_history.append({
@@ -165,13 +197,18 @@ if query:
                 "content": message,
                 "records": records,
             })
+            if current_user_id is not None:
+                add_message(db, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", message, records)
             st.session_state.accounts_pending_records = records
         else:
+            fallback = message or "Não foi possível interpretar o pedido. Tente ser mais específico (quem, valor, data)."
             st.session_state.accounts_chat_history.append({
                 "role": "assistant",
-                "content": message or "Não foi possível interpretar o pedido. Tente ser mais específico (quem, valor, data).",
+                "content": fallback,
                 "records": None,
             })
+            if current_user_id is not None:
+                add_message(db, current_user_id, SCOPE_ACCOUNTS_AGENT, "assistant", fallback, None)
             st.session_state.accounts_pending_records = []
     finally:
         db.close()
@@ -179,6 +216,12 @@ if query:
 
 st.markdown("---")
 if st.button("Limpar histórico", use_container_width=True, key="btn_clear_accounts"):
+    if current_user_id is not None:
+        db_clear = SessionLocal()
+        try:
+            clear(db_clear, current_user_id, SCOPE_ACCOUNTS_AGENT)
+        finally:
+            db_clear.close()
     st.session_state.accounts_chat_history = []
     st.session_state.accounts_pending_records = []
     st.rerun()

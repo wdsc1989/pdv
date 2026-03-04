@@ -8,3 +8,6 @@ from .sale import Sale, SaleItem  # noqa: F401
 from .account_payable import AccountPayable  # noqa: F401
 from .account_receivable import AccountReceivable  # noqa: F401
 from .ai_config import AIConfig  # noqa: F401
+from .agent_prompt import AgentPrompt  # noqa: F401
+from .agent_chat_memory import AgentChatMessage  # noqa: F401
+from .personal_agenda import PersonalAgenda  # noqa: F401
