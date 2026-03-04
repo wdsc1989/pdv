@@ -6,6 +6,34 @@ Objetivo: publicar o PDV no subdomínio **pdv.srv1140258.hstgr.cloud**, no mesmo
 
 ---
 
+## Publicar evolução (app já na Hostinger)
+
+Quando o PDV **já está publicado** e você só quer subir a **nova versão** do código:
+
+1. **No seu PC:** commit e push para o branch `main` do repositório (GitHub, etc.):
+   ```powershell
+   cd C:\Users\DELL\Documents\Projetos\PDV
+   git add -A
+   git commit -m "Evolução: atualizações para produção"
+   git push origin main
+   ```
+
+2. **Rode o redeploy** (o script faz `git pull` na VPS e reinicia o Streamlit):
+   ```powershell
+   .\scripts\Redeploy-PDV.ps1
+   ```
+   Se usar outro host/usuário ou chave SSH:
+   ```powershell
+   .\scripts\Redeploy-PDV.ps1 -VpsHost srv1140258.hstgr.cloud -SshUser root
+   .\scripts\Redeploy-PDV.ps1 -SshKeyPath "C:\caminho\para\sua_chave"
+   ```
+
+3. Acesse **http://pdv.srv1140258.hstgr.cloud** (ou seu domínio) e confira a nova versão.
+
+O `.env` e o banco na VPS **não são alterados** pelo redeploy; só o código é atualizado.
+
+---
+
 ## Deploy via PowerShell (tudo da sua máquina)
 
 Você pode fazer **todo o deploy da sua máquina Windows** pelo PowerShell. O script envia os arquivos para a VPS e executa a instalação lá (diretórios separados, novo banco PostgreSQL, Nginx, systemd).

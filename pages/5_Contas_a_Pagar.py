@@ -439,25 +439,29 @@ try:
         query_ag = query_ag or st.session_state.pop("pending_audio_query_contas", None)
 
         with st.expander("🎤 Gravar pelo microfone"):
-            st.caption("Use o microfone do dispositivo. O áudio é transcrito e enviado como pedido (não é guardado no servidor).")
+            st.caption("Grave um áudio e envie; será transcrito e enviado como pedido (não é guardado no servidor).")
             audio_key_ag = f"audio_contas_{st.session_state.get('audio_contas_counter', 0)}"
-            audio_data_ag = st.audio_input("Gravar áudio", key=audio_key_ag, sample_rate=16000)
-            if audio_data_ag:
-                db_audio_ag = SessionLocal()
+            audio_value_ag = st.audio_input("Microfone", key=audio_key_ag, label_visibility="collapsed")
+            if audio_value_ag is not None and hasattr(audio_value_ag, "read"):
                 try:
-                    with st.spinner("Transcrevendo áudio..."):
-                        audio_bytes_ag = audio_data_ag.read()
-                        text_ag, err_ag = transcribe_audio(db_audio_ag, audio_bytes_ag, "audio.wav")
-                    del audio_bytes_ag
-                    if err_ag:
-                        st.error(err_ag)
-                    elif text_ag:
-                        st.session_state["pending_audio_query_contas"] = text_ag
-                        st.session_state["audio_contas_counter"] = st.session_state.get("audio_contas_counter", 0) + 1
-                        st.success(f"Transcrito: \"{text_ag[:80]}{'...' if len(text_ag) > 80 else ''}\"")
-                        st.rerun()
-                finally:
-                    db_audio_ag.close()
+                    audio_bytes_ag = audio_value_ag.read()
+                except Exception:
+                    st.error("Erro ao ler o áudio.")
+                else:
+                    if audio_bytes_ag:
+                        db_audio_ag = SessionLocal()
+                        try:
+                            with st.spinner("Transcrevendo áudio..."):
+                                text_ag, err_ag = transcribe_audio(db_audio_ag, audio_bytes_ag, "audio.wav")
+                            if err_ag:
+                                st.error(err_ag)
+                            elif text_ag:
+                                st.session_state["pending_audio_query_contas"] = text_ag
+                                st.session_state["audio_contas_counter"] = st.session_state.get("audio_contas_counter", 0) + 1
+                                st.success(f"Transcrito: \"{text_ag[:80]}{'...' if len(text_ag) > 80 else ''}\"")
+                                st.rerun()
+                        finally:
+                            db_audio_ag.close()
 
         if query_ag:
             # Se já há confirmação de baixa pendente e o usuário confirmou por texto, executar baixa sem chamar o agente

@@ -106,25 +106,29 @@ def render_agente_relatorios_ui() -> None:
     query = query or st.session_state.pop("pending_audio_query", None)
 
     with st.expander("Gravar pelo microfone"):
-        st.caption("Áudio é transcrito e enviado como pergunta (não é guardado no servidor).")
+        st.caption("Grave um áudio e envie; será transcrito e enviado como pergunta (não é guardado no servidor).")
         audio_key = f"audio_relatorios_{st.session_state.get('audio_relatorios_counter', 0)}"
-        audio_data = st.audio_input("Gravar áudio", key=audio_key, sample_rate=16000)
-        if audio_data:
-            db_audio = SessionLocal()
+        audio_value = st.audio_input("Microfone", key=audio_key, label_visibility="collapsed")
+        if audio_value is not None and hasattr(audio_value, "read"):
             try:
-                with st.spinner("Transcrevendo áudio..."):
-                    audio_bytes = audio_data.read()
-                    text, err = transcribe_audio(db_audio, audio_bytes, "audio.wav")
-                del audio_bytes
-                if err:
-                    st.error(err)
-                elif text:
-                    st.session_state["pending_audio_query"] = text
-                    st.session_state["audio_relatorios_counter"] = st.session_state.get("audio_relatorios_counter", 0) + 1
-                    st.success(f"Transcrito: \"{text[:80]}{'...' if len(text) > 80 else ''}\"")
-                    st.rerun()
-            finally:
-                db_audio.close()
+                audio_bytes = audio_value.read()
+            except Exception:
+                st.error("Erro ao ler o áudio.")
+            else:
+                if audio_bytes:
+                    db_audio = SessionLocal()
+                    try:
+                        with st.spinner("Transcrevendo áudio..."):
+                            text, err = transcribe_audio(db_audio, audio_bytes, "audio.wav")
+                        if err:
+                            st.error(err)
+                        elif text:
+                            st.session_state["pending_audio_query"] = text
+                            st.session_state["audio_relatorios_counter"] = st.session_state.get("audio_relatorios_counter", 0) + 1
+                            st.success(f"Transcrito: \"{text[:80]}{'...' if len(text) > 80 else ''}\"")
+                            st.rerun()
+                    finally:
+                        db_audio.close()
 
     if query:
         st.session_state.chat_history.append({"role": "user", "content": query})

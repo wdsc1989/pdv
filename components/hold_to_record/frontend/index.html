@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Segure para gravar</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 8px;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+    }
+    #btn {
+      padding: 10px 20px;
+      font-size: 14px;
+      cursor: pointer;
+      border: 2px solid #1a73e8;
+      background: #1a73e8;
+      color: #fff;
+      border-radius: 8px;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+    #btn:disabled {
+      opacity: 0.7;
+      cursor: wait;
+    }
+    #btn.recording {
+      background: #c5221f;
+      border-color: #c5221f;
+      animation: pulse 0.8s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      50% { opacity: 0.85; }
+    }
+  </style>
+</head>
+<body>
+  <button type="button" id="btn" name="hold_to_record_btn" aria-label="Segure para gravar áudio. Solte para enviar.">
+    Segure para gravar
+  </button>
+  <script>
+    (function() {
+      var MAX_DURATION_MS = 60000;
+      var btn = document.getElementById("btn");
+      var mediaRecorder = null;
+      var chunks = [];
+      var stream = null;
+      var recordingStart = 0;
+
+      function sendValue(value) {
+        window.parent.postMessage({
+          type: "streamlit:setComponentValue",
+          value: value
+        }, "*");
+      }
+
+      function sendError(msg) {
+        sendValue({ error: msg });
+      }
+
+      function setReady() {
+        window.parent.postMessage({
+          type: "streamlit:componentReady",
+          apiVersion: 1
+        }, "*");
+      }
+
+      function stopRecording() {
+        if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+        mediaRecorder.stop();
+        btn.classList.remove("recording");
+        btn.textContent = "Segure para gravar";
+        btn.disabled = true;
+      }
+
+      function startRecording() {
+        chunks = [];
+        btn.classList.add("recording");
+        btn.textContent = "Gravando... Solte para enviar.";
+        recordingStart = Date.now();
+        try {
+          mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+        } catch (e) {
+          try {
+            mediaRecorder = new MediaRecorder(stream);
+          } catch (e2) {
+            sendError("permission_denied");
+            btn.classList.remove("recording");
+            btn.textContent = "Segure para gravar";
+            return;
+          }
+        }
+        mediaRecorder.ondataavailable = function(e) {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
+        mediaRecorder.onstop = function() {
+          if (chunks.length === 0) {
+            sendError("empty");
+            btn.disabled = false;
+            return;
+          }
+          var blob = new Blob(chunks, { type: mediaRecorder.mimeType || "audio/webm" });
+          var reader = new FileReader();
+          reader.onloadend = function() {
+            var base64 = reader.result.split(",")[1] || "";
+            sendValue({ b64: base64 });
+            btn.disabled = false;
+          };
+          reader.readAsDataURL(blob);
+        };
+        mediaRecorder.start(100);
+      }
+
+      function onPointerDown(e) {
+        e.preventDefault();
+        if (btn.disabled || !stream) return;
+        startRecording();
+      }
+
+      function onPointerUp(e) {
+        e.preventDefault();
+        stopRecording();
+      }
+
+      function onPointerLeave(e) {
+        e.preventDefault();
+        stopRecording();
+      }
+
+      btn.addEventListener("pointerdown", onPointerDown, true);
+      btn.addEventListener("pointerup", onPointerUp, true);
+      btn.addEventListener("pointerleave", onPointerLeave, true);
+      btn.addEventListener("touchstart", function(e) { e.preventDefault(); onPointerDown(e); }, { passive: false });
+      btn.addEventListener("touchend", function(e) { e.preventDefault(); onPointerUp(e); }, { passive: false });
+
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(function(s) {
+          stream = s;
+        })
+        .catch(function() {
+          sendError("permission_denied");
+          btn.textContent = "Microfone negado";
+        });
+
+      var readySent = false;
+      function maybeSetReady() {
+        if (readySent) return;
+        readySent = true;
+        setReady();
+      }
+      window.addEventListener("message", function(event) {
+        if (event.source !== window.parent) return;
+        if (event.data && typeof event.data === "object" && event.data.type === "streamlit:render") {
+          maybeSetReady();
+        }
+      });
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() {
+          requestAnimationFrame(function() {
+            maybeSetReady();
+          });
+        });
+      });
+
+      setInterval(function() {
+        if (mediaRecorder && mediaRecorder.state === "recording" && (Date.now() - recordingStart) >= MAX_DURATION_MS) {
+          stopRecording();
+        }
+      }, 1000);
+    })();
+  </script>
+</body>
+</html>

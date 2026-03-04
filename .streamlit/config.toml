@@ -1,3 +1,11 @@
 [client]
 showSidebarNavigation = false
 
+[server]
+# Produção: desative execução de código arbitrário e proteja com proxy
+headless = true
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
