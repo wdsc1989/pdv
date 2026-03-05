@@ -168,7 +168,6 @@ try:
         st.info("Nenhum produto encontrado para este filtro.")
     else:
         uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
-
         # Grid 4 colunas
         COLS = 4
         for i in range(0, len(produtos_filtrados), COLS):
@@ -185,6 +184,7 @@ try:
                         if candidate.exists():
                             img_path = candidate
 
+                    st.markdown(f"**{p.codigo}**")
                     if img_path:
                         st.image(str(img_path), width=90)
                     else:
@@ -195,11 +195,9 @@ try:
                             "Sem imagem</div>",
                             unsafe_allow_html=True,
                         )
-
                     nome_safe = (p.nome or "").replace("<", "&lt;").replace(">", "&gt;")[:22]
                     if len(p.nome or "") > 22:
                         nome_safe += "..."
-                    st.markdown(f"**{p.codigo}**")
                     st.markdown(f"{nome_safe}")
                     st.markdown(f"**{format_currency(p.preco_venda)}**")
                     estoque = p.estoque_atual if p.estoque_atual is not None else 0
@@ -215,7 +213,6 @@ try:
                         key=f"qty_sel_{p.id}",
                         label_visibility="collapsed",
                     )
-
                     if int(nova_qtd) != qtd_atual:
                         novo_cart = list(cart)
                         if nova_qtd <= 0:

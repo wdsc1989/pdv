@@ -10,7 +10,9 @@ import streamlit as st
 
 from config.database import init_db
 from services.auth_service import AuthService, ensure_default_admin
+from utils.login_config import load_login_config
 from utils.navigation import show_sidebar
+from utils.sidebar_logo import get_sidebar_logo_path
 
 
 st.set_page_config(
@@ -36,8 +38,17 @@ def initialize_app():
 
 
 def login_page():
-    st.markdown("# 🔐 PDV - Loja de Roupas")
-    st.caption("Sistema de Ponto de Venda para loja de roupas")
+    lc = load_login_config()
+    login_title = lc.get("login_title") or "🔐 PDV - Loja de Roupas"
+    login_subtitle = lc.get("login_subtitle") or "Sistema de Ponto de Venda para loja de roupas"
+    login_show_logo = lc.get("login_show_logo", True)
+
+    logo_path = get_sidebar_logo_path()
+    if logo_path and login_show_logo:
+        logo_width = lc.get("login_logo_width", 280)
+        st.image(str(logo_path), width=logo_width)
+    st.markdown(f"# {login_title}")
+    st.caption(login_subtitle)
     st.markdown("---")
 
     col1, col2, col3 = st.columns([1, 2, 1])

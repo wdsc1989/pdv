@@ -1,6 +1,6 @@
 """
 Página de impressão do recibo não fiscal.
-Abre com o sale_id em session_state (redirecionado da página de Vendas).
+Abre com o sale_id em session_state (redirecionado da página de Vendas) ou via reimpressão.
 """
 import sys
 from pathlib import Path
@@ -31,11 +31,12 @@ st.set_page_config(
 AuthService.require_roles(["admin", "gerente", "vendedor"])
 show_sidebar()
 
-sale_id = st.session_state.pop("print_receipt_sale_id", None)
+sale_id = st.session_state.get("print_receipt_sale_id")
 
 if sale_id is None:
-    st.info("Nenhum recibo para imprimir. Finalize uma venda em **Vendas** marcando **Imprimir extrato não fiscal**.")
+    st.info("Nenhum recibo para imprimir. Finalize uma venda em **Vendas** marcando **Imprimir extrato não fiscal**. Para reimprimir, abra **Vendas** → **Vendas registradas** → **Editar** na venda desejada e use **Reimprimir recibo**.")
     if st.button("Voltar às Vendas"):
+        st.session_state.pop("print_receipt_sale_id", None)
         st.switch_page("pages/4_Vendas.py")
     st.stop()
 
@@ -60,6 +61,7 @@ try:
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
         if st.button("Voltar às Vendas", type="primary", use_container_width=True):
+            st.session_state.pop("print_receipt_sale_id", None)
             st.switch_page("pages/4_Vendas.py")
 finally:
     db.close()

@@ -24,10 +24,36 @@ from utils.formatters import format_currency
 from utils.navigation import show_sidebar
 
 
-def _comprimir_imagem(img_bytes: bytes, max_tamanho: int = 1200, qualidade: int = 88) -> bytes:
+def _crop_to_ratio(img_bytes: bytes, ratio_w: int = 9, ratio_h: int = 16) -> bytes:
+    """
+    Recorta a imagem pelo centro para a proporção ratio_w:ratio_h (ex.: 9:16 vertical).
+    Retorna JPEG em bytes. Em caso de erro, retorna os bytes originais.
+    """
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img = img.convert("RGB")
+        w, h = img.size
+        target = ratio_w / ratio_h
+        current = w / h
+        if current > target:
+            new_w = int(h * target)
+            left = (w - new_w) // 2
+            img = img.crop((left, 0, left + new_w, h))
+        elif current < target:
+            new_h = int(w / target)
+            top = (h - new_h) // 2
+            img = img.crop((0, top, w, top + new_h))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return img_bytes
+
+
+def _comprimir_imagem(img_bytes: bytes, max_tamanho: int = 1200, qualidade: int = 100) -> bytes:
     """
     Comprime imagem para economia de espaço. Redimensiona e salva em JPEG.
-    Ideal para fotos de celular (maior lado até max_tamanho px, qualidade JPEG 88).
+    Qualidade 100 para melhor nitidez (maior lado até max_tamanho px).
     """
     try:
         img = Image.open(io.BytesIO(img_bytes))
@@ -299,16 +325,16 @@ try:
 
         with st.expander("Imagem do produto (opcional)"):
             st.caption(
-                "Segure o celular na vertical (retrato) para tirar a foto. "
-                "Ou envie um arquivo. A imagem será compactada automaticamente."
+                "Ao tirar foto pela câmera do celular, use a tela na vertical (proporção 9:16). "
+                "A imagem será recortada para 9:16 e compactada automaticamente. Ou envie um arquivo."
             )
             col_cam, col_upload = st.columns(2)
             with col_cam:
                 foto_camera = st.camera_input(
-                    "Tirar foto",
+                    "Tirar foto (9:16 vertical)",
                     key=f"cad_camera_{form_version}",
                     disabled=not can_edit,
-                    help="Segure o celular na vertical (retrato) para melhor enquadramento do produto.",
+                    help="Segure o celular na vertical (9:16). A foto será ajustada para essa proporção.",
                 )
             with col_upload:
                 arquivo_upload = st.file_uploader(
@@ -396,7 +422,8 @@ try:
                         if existe_codigo:
                             st.error("Já existe um produto com este código.")
                         else:
-                            img_bytes = _comprimir_imagem(imagem.getvalue()) if imagem else None
+                            raw = imagem.getvalue() if imagem else None
+                            img_bytes = _comprimir_imagem(_crop_to_ratio(raw, 9, 16)) if raw else None
                             img_name = (getattr(imagem, "name", None) or "foto.jpg").rsplit(".", 1)[0] + ".jpg"
                             st.session_state.produto_draft = {
                                 "product_id": None,
@@ -415,7 +442,8 @@ try:
                             }
                             st.rerun()
                     else:
-                        img_bytes = _comprimir_imagem(imagem.getvalue()) if imagem else None
+                        raw = imagem.getvalue() if imagem else None
+                        img_bytes = _comprimir_imagem(_crop_to_ratio(raw, 9, 16)) if raw else None
                         img_name = (imagem.name if imagem else "foto.jpg").rsplit(".", 1)[0] + ".jpg"
                         st.session_state.produto_draft = {
                             "product_id": produto_atual.id,

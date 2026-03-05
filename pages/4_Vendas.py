@@ -336,13 +336,17 @@ try:
                             index=idx_atual,
                             key="edit_tipo_pag",
                         )
-                        col_salvar, col_stornar, col_fechar = st.columns(3)
+                        col_salvar, col_reimprimir, col_stornar, col_fechar = st.columns(4)
                         with col_salvar:
                             if st.button("Salvar alterações", key="salvar_edit"):
                                 venda_edit.tipo_pagamento = novo_tipo
                                 db.commit()
                                 st.success("Alterações salvas.")
                                 st.rerun()
+                        with col_reimprimir:
+                            if st.button("Reimprimir recibo", key="reimprimir_recibo_edit"):
+                                st.session_state.print_receipt_sale_id = venda_edit.id
+                                st.switch_page("pages/9_Recibo_Impressao.py")
                         with col_stornar:
                             if st.button("Stornar venda (cancelar)", type="secondary", key="stornar_edit"):
                                 st.session_state.confirmar_storno_id = venda_edit.id

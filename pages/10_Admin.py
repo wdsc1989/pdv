@@ -28,6 +28,7 @@ from services.agenda_agent_service import AgendaAgentService
 from services.report_agent_service import ReportAgentService
 from utils.formatters import format_currency
 from utils.navigation import show_sidebar
+from utils.login_config import load_login_config, save_login_config
 from utils.receipt_config import load_receipt_config, save_receipt_config
 from utils.sidebar_logo import get_sidebar_logo_path, remove_sidebar_logo, save_sidebar_logo
 
@@ -195,6 +196,49 @@ try:
         if logo_file:
             save_sidebar_logo(logo_file.getvalue(), logo_file.name)
             st.success("Logo salva. Atualize a página ou navegue para ver no menu.")
+            st.rerun()
+
+    st.markdown("---")
+    with st.expander("Tela de login"):
+        st.caption(
+            "Título e subtítulo exibidos na tela de login. "
+            "A logo exibida na tela de login é a mesma do menu lateral. "
+            "Para alterá-la, use o bloco 'Logo do menu (sidebar)' acima."
+        )
+        lc = load_login_config()
+        login_title = st.text_input(
+            "Título da tela de login",
+            value=lc.get("login_title", ""),
+            placeholder="Ex: 🔐 PDV - Loja de Roupas",
+            key="admin_login_title",
+        )
+        login_subtitle = st.text_input(
+            "Subtítulo",
+            value=lc.get("login_subtitle", ""),
+            placeholder="Ex: Sistema de Ponto de Venda para loja de roupas",
+            key="admin_login_subtitle",
+        )
+        login_show_logo = st.checkbox(
+            "Exibir logo na tela de login",
+            value=lc.get("login_show_logo", True),
+            key="admin_login_show_logo",
+        )
+        login_logo_width = st.number_input(
+            "Largura da logo na tela de login (px)",
+            min_value=120,
+            max_value=500,
+            value=int(lc.get("login_logo_width", 280)),
+            step=20,
+            key="admin_login_logo_width",
+        )
+        if st.button("Salvar", key="login_config_save_btn", type="primary"):
+            save_login_config({
+                "login_title": login_title or lc.get("login_title", ""),
+                "login_subtitle": login_subtitle or lc.get("login_subtitle", ""),
+                "login_show_logo": login_show_logo,
+                "login_logo_width": login_logo_width,
+            })
+            st.success("Configuração da tela de login salva.")
             st.rerun()
 
     st.markdown("---")
