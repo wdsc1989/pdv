@@ -100,7 +100,7 @@ Depois do deploy, acesse **http://pdv.srv1140258.hstgr.cloud** e faça login com
 
 ### Redeploy rápido (após push para produção)
 
-Quando você já fez deploy uma vez e só quer **atualizar o código** (git pull + reiniciar o Streamlit), use o script de redeploy. Ele para o serviço, libera a porta 8501 se necessário e sobe de novo. **Não pede senha do banco.**
+Quando você já fez deploy uma vez e só quer **atualizar o código** (git pull + reiniciar o Streamlit), use o script de redeploy. Ele para o serviço, libera a porta 8502 (PDV) se necessário e sobe de novo. **Não pede senha do banco.**
 
 Na pasta do projeto:
 
@@ -394,17 +394,17 @@ Saída esperada: mensagem de sucesso (e, com SQLite, criação do arquivo `data/
 **8.3 – Rodar o Streamlit manualmente (teste)**
 
 ```bash
-streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+streamlit run app.py --server.port 8502 --server.address 0.0.0.0
 ```
 
-- `--server.port 8501` – porta em que o app responde.
+- `--server.port 8502` – porta do PDV (Contábil usa 8501 na mesma VPS).
 - `--server.address 0.0.0.0` – aceita conexões de fora (necessário para o Nginx acessar).
 
 Você deve ver no terminal algo como “You can now view your Streamlit app in your browser” e “Local URL” / “Network URL”.
 
 **8.4 – Testar no navegador**
 
-Abra no navegador: `http://IP_DO_SERVIDOR:8501` (troque pelo IP real do seu servidor ou use `http://srv1140258.hstgr.cloud:8501` se a porta 8501 estiver aberta no firewall). Deve aparecer a tela de login do PDV.
+Abra no navegador: `http://IP_DO_SERVIDOR:8502` (troque pelo IP real do seu servidor ou use `http://srv1140258.hstgr.cloud:8502` se a porta 8502 estiver aberta no firewall). Deve aparecer a tela de login do PDV.
 
 Para encerrar o teste: no terminal do SSH, `Ctrl+C`.
 
@@ -422,7 +422,7 @@ O `&` coloca o processo em segundo plano. Para parar depois: `pkill -f "streamli
 
 ## 9. Configurar Nginx (proxy reverso)
 
-Assim, o acesso será por **http://pdv.srv1140258.hstgr.cloud** (porta 80), sem precisar abrir a porta 8501 na internet.
+Assim, o acesso será por **http://pdv.srv1140258.hstgr.cloud** (porta 80), sem precisar abrir a porta 8502 na internet.
 
 **9.1 – Criar o arquivo de site do Nginx**
 
@@ -455,7 +455,7 @@ server {
 }
 ```
 
-- `proxy_pass http://127.0.0.1:8501` – encaminha todo o tráfego para o Streamlit.
+- `proxy_pass http://127.0.0.1:8502` – encaminha todo o tráfego para o Streamlit (PDV).
 - As linhas `Upgrade` e `Connection` são importantes para o WebSocket do Streamlit.
 - Os timeouts longos evitam corte em uso prolongado.
 
@@ -557,7 +557,7 @@ User=u123456789
 Group=u123456789
 WorkingDirectory=/home/u123456789/pdv
 Environment="PATH=/home/u123456789/pdv/.venv/bin"
-ExecStart=/home/u123456789/pdv/.venv/bin/streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
+ExecStart=/home/u123456789/pdv/.venv/bin/streamlit run app.py --server.port 8502 --server.address 0.0.0.0 --server.headless true
 Restart=always
 RestartSec=5
 
@@ -637,8 +637,8 @@ O `init_db.py` (e o app na inicialização) garante um usuário **admin** padrã
 
 | Problema | O que verificar |
 |----------|------------------|
-| **502 Bad Gateway** | Streamlit não está rodando. `sudo systemctl start pdv-streamlit` e `sudo systemctl status pdv-streamlit`. Confirme a porta: `ss -tlnp \| grep 8501`. |
-| **Porta 8501 em uso** | Outro processo está usando. `sudo lsof -i :8501` ou `sudo ss -tlnp \| grep 8501`. Mate o processo ou mude a porta no `streamlit run` e no Nginx. |
+| **502 Bad Gateway** | Streamlit não está rodando. `sudo systemctl start pdv-streamlit` e `sudo systemctl status pdv-streamlit`. Confirme a porta: `ss -tlnp \| grep 8502`. |
+| **Porta 8502 em uso** | Outro processo está usando. `sudo lsof -i :8502` ou `sudo ss -tlnp \| grep 8502`. Mate o processo ou use `.\scripts\Fix-PDV-Porta-8502.ps1` para alinhar Nginx e systemd na 8502. |
 | **Permission denied (pip/venv)** | Use o venv: `source .venv/bin/activate` antes de `pip`/`python`. Em systemd, confira `User=` e `WorkingDirectory=`. |
 | **streamlit: comando não encontrado** | O systemd usa o caminho completo: `/home/.../pdv/.venv/bin/streamlit`. Confira se esse arquivo existe com `ls -la ~/pdv/.venv/bin/streamlit`. |
 | **Erro de conexão com o banco** | Revise `.env`: `DATABASE_URL` correto, usuário/senha, host (localhost ou o que a Hostinger informar). Teste com `python init_db.py`. |

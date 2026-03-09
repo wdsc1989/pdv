@@ -14,6 +14,7 @@ from models.personal_agenda import PersonalAgenda
 from services.agenda_agent_service import AgendaAgentService
 from services.auth_service import AuthService
 from services.chat_memory import SCOPE_AGENDA_AGENT, add_message, clear, get_messages
+from services.speech_to_text_service import transcribe_audio
 from utils.navigation import show_sidebar
 
 
@@ -140,6 +141,32 @@ try:
             "Descreva o compromisso (ex.: Reunião amanhã às 14h, Dentista dia 15/03)...",
             key="chat_agenda",
         )
+        query_ag = query_ag or st.session_state.pop("pending_audio_query_agenda", None)
+
+        with st.expander("🎤 Gravar pelo microfone"):
+            st.caption("Grave um áudio e envie; será transcrito e enviado como pedido de compromisso (não é guardado no servidor).")
+            audio_key_agenda = f"audio_agenda_{st.session_state.get('audio_agenda_counter', 0)}"
+            audio_value_agenda = st.audio_input("Microfone", key=audio_key_agenda, label_visibility="collapsed")
+            if audio_value_agenda is not None and hasattr(audio_value_agenda, "read"):
+                try:
+                    audio_bytes_agenda = audio_value_agenda.read()
+                except Exception:
+                    st.error("Erro ao ler o áudio.")
+                else:
+                    if audio_bytes_agenda:
+                        db_audio_agenda = SessionLocal()
+                        try:
+                            with st.spinner("Transcrevendo áudio..."):
+                                text_agenda, err_agenda = transcribe_audio(db_audio_agenda, audio_bytes_agenda, "audio.wav")
+                            if err_agenda:
+                                st.error(err_agenda)
+                            elif text_agenda:
+                                st.session_state["pending_audio_query_agenda"] = text_agenda
+                                st.session_state["audio_agenda_counter"] = st.session_state.get("audio_agenda_counter", 0) + 1
+                                st.success(f"Transcrito: \"{text_agenda[:80]}{'...' if len(text_agenda) > 80 else ''}\"")
+                                st.rerun()
+                        finally:
+                            db_audio_agenda.close()
 
         if query_ag:
             st.session_state.agenda_chat_history.append({"role": "user", "content": query_ag})
@@ -149,8 +176,9 @@ try:
                     add_message(db_ag, current_user_id, SCOPE_AGENDA_AGENT, "user", query_ag, None)
                 agent = AgendaAgentService(db_ag)
                 with st.spinner("Interpretando pedido..."):
+                    # Histórico para contexto: mensagens anteriores (role + content)
                     history_ag = [
-                        {"role": m.get("role", "user"), "content": m.get("content", "")}
+                        {"role": (m.get("role") or "user"), "content": (m.get("content") or "")}
                         for m in st.session_state.agenda_chat_history[:-1]
                     ]
                     out = agent.parse_request(query_ag, conversation_history=history_ag)

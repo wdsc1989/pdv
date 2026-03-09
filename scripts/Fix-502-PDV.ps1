@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Corrige 502 Bad Gateway: para o Streamlit, libera a porta 8501 e inicia de novo na VPS.
+  Corrige 502 Bad Gateway: para o PDV (porta 8502), libera a porta e reinicia o serviço na VPS. Contábil fica na 8501.
   Execute e digite a senha SSH quando solicitado.
 #>
 param(
@@ -16,7 +16,7 @@ $sshOpt = "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=15"
 $sshArgs = @($sshOpt + $remote)
 if ($SshKeyPath -and (Test-Path $SshKeyPath)) { $sshArgs = @("-i", $SshKeyPath) + $sshOpt + $remote }
 
-$cmd = "sudo systemctl stop pdv-streamlit 2>/dev/null; sleep 2; sudo fuser -k 8501/tcp 2>/dev/null; sleep 1; sudo systemctl start pdv-streamlit; sleep 2; echo '=== Status ==='; sudo systemctl status pdv-streamlit --no-pager; echo ''; echo '=== Ultimos logs ==='; sudo journalctl -u pdv-streamlit -n 20 --no-pager"
+$cmd = "sudo systemctl stop pdv-streamlit 2>/dev/null; sleep 2; sudo fuser -k 8502/tcp 2>/dev/null; sleep 1; sudo systemctl start pdv-streamlit; sleep 2; echo '=== Status ==='; sudo systemctl status pdv-streamlit --no-pager; echo ''; echo '=== Ultimos logs ==='; sudo journalctl -u pdv-streamlit -n 20 --no-pager"
 
 Write-Host "`n=== Corrigir 502 - PDV na VPS ===" -ForegroundColor Cyan
 Write-Host "Host: $VpsHost | Usuario: $SshUser"

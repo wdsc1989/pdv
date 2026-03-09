@@ -180,7 +180,11 @@ if query:
             add_message(db, current_user_id, SCOPE_ACCOUNTS_AGENT, "user", query, None)
         agent = AccountsAgentService(db)
         with st.spinner("Interpretando pedido..."):
-            history = st.session_state.accounts_chat_history[:-1]
+            # Histórico para contexto: mensagens anteriores (role + content)
+            history = [
+                {"role": (m.get("role") or "user"), "content": (m.get("content") or "")}
+                for m in st.session_state.accounts_chat_history[:-1]
+            ]
             out = agent.parse_request(query, conversation_history=history)
         status = out.get("status", "error")
         message = out.get("message", "")

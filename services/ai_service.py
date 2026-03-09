@@ -1,6 +1,8 @@
 """
 Serviço de IA para o agente de relatórios (análise de pergunta e formatação de resposta).
 """
+from typing import Optional, Tuple
+
 from sqlalchemy.orm import Session
 
 from config.ai_config import AIConfigManager
@@ -118,3 +120,70 @@ class AIService:
             return True, "Conexão com a API realizada com sucesso."
         except Exception as e:
             return False, str(e)
+
+    def complete(
+        self,
+        prompt: str,
+        temperature: float = 0.3,
+        max_tokens: int = 300,
+        json_mode: bool = False,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Envia um prompt e retorna o texto da resposta.
+        Retorna (content, error): em sucesso content é o texto e error é None;
+        em falha content é None e error é a mensagem.
+        Para json_mode=True, usa response_format onde suportado (OpenAI, Groq);
+        para Gemini/Ollama o prompt já deve pedir JSON.
+        """
+        client, err = self._get_client()
+        if err:
+            return None, err
+        if not self.config:
+            return None, "Configuração de IA não encontrada"
+        provider = self.config["provider"]
+        model = self.config.get("model", "") or (
+            "gpt-4o-mini" if provider == "openai"
+            else "gemini-1.5-flash" if provider == "gemini"
+            else "llama-3.3-70b-versatile" if provider == "groq"
+            else "llama3.2"
+        )
+        try:
+            if provider == "openai":
+                kwargs = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+                r = client.chat.completions.create(**kwargs)
+                content = (r.choices[0].message.content or "").strip()
+                return (content or None, None)
+            if provider == "gemini":
+                r = client.generate_content(prompt)
+                content = (r.text or "").strip()
+                return (content or None, None)
+            if provider == "groq":
+                kwargs = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+                r = client.chat.completions.create(**kwargs)
+                content = (r.choices[0].message.content or "").strip()
+                return (content or None, None)
+            if provider == "ollama":
+                r = client.chat(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": temperature, "num_predict": max_tokens},
+                )
+                content = (r.get("message", {}).get("content") or "").strip()
+                return (content or None, None)
+            return None, f"Provedor '{provider}' não suportado"
+        except Exception as e:
+            return None, str(e)

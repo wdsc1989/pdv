@@ -11,6 +11,7 @@ import streamlit as st
 from sqlalchemy import select
 
 from config.ai_config import AIConfigManager
+from mcp import MCPDetector, MCPExtractor, MCPFormatter, MCPLister, MCPValidator
 from config.database import SessionLocal
 from config.prompt_config import (
     ACCOUNTS_AGENT_KEYS,
@@ -206,11 +207,31 @@ try:
             "Para alterá-la, use o bloco 'Logo do menu (sidebar)' acima."
         )
         lc = load_login_config()
+        theme_visual = st.radio(
+            "Aparência (tema)",
+            options=["default", "identidade_visual"],
+            format_func=lambda x: "Padrão Streamlit" if x == "default" else "Identidade visual (Vieira Closet)",
+            index=0 if (lc.get("theme_visual") or "default") == "default" else 1,
+            key="admin_theme_visual",
+            help="Identidade visual aplica cores (rosa #FEEEF0, dourado, preto) e fontes (Alex Brush, Montserrat) em todas as telas.",
+        )
+        login_show_title = st.checkbox(
+            "Exibir título na tela de login",
+            value=lc.get("login_show_title", True),
+            key="admin_login_show_title",
+            help="Quando desmarcado, o título configurado abaixo não aparece na tela de login.",
+        )
         login_title = st.text_input(
             "Título da tela de login",
             value=lc.get("login_title", ""),
             placeholder="Ex: 🔐 PDV - Loja de Roupas",
             key="admin_login_title",
+        )
+        login_show_subtitle = st.checkbox(
+            "Exibir subtítulo na tela de login",
+            value=lc.get("login_show_subtitle", True),
+            key="admin_login_show_subtitle",
+            help="Quando desmarcado, o subtítulo configurado abaixo não aparece na tela de login.",
         )
         login_subtitle = st.text_input(
             "Subtítulo",
@@ -231,14 +252,32 @@ try:
             step=20,
             key="admin_login_logo_width",
         )
+        _align_opts = ["esquerda", "centro", "direita"]
+        _align_val = (lc.get("login_logo_align") or "centro").strip().lower()
+        if _align_val not in _align_opts:
+            _align_val = "centro"
+        login_logo_align = st.radio(
+            "Alinhamento da logo na tela de login",
+            options=_align_opts,
+            format_func=lambda x: {"esquerda": "Esquerda", "centro": "Centro", "direita": "Direita"}[x],
+            index=_align_opts.index(_align_val),
+            key="admin_login_logo_align",
+            help="Define se a logo (e o texto da marca, quando em identidade visual) ficam à esquerda, centralizados ou à direita. Padrão: Centro.",
+        )
         if st.button("Salvar", key="login_config_save_btn", type="primary"):
-            save_login_config({
+            new_config = {
+                **lc,
+                "theme_visual": theme_visual,
+                "login_show_title": login_show_title,
                 "login_title": login_title or lc.get("login_title", ""),
+                "login_show_subtitle": login_show_subtitle,
                 "login_subtitle": login_subtitle or lc.get("login_subtitle", ""),
                 "login_show_logo": login_show_logo,
                 "login_logo_width": login_logo_width,
-            })
-            st.success("Configuração da tela de login salva.")
+                "login_logo_align": login_logo_align,
+            }
+            save_login_config(new_config)
+            st.success("Configuração da tela de login salva. Atualize a página ou faça logout para ver o tema.")
             st.rerun()
 
     st.markdown("---")
@@ -314,6 +353,126 @@ try:
             )
         else:
             st.warning("Nenhuma configuração de IA ativa. Configure abaixo para usar o agente de relatórios.")
+
+        st.markdown("---")
+        with st.expander("MCP (Model Context Protocol)"):
+            st.caption(
+                "Os agentes **Contas** (Contas a Pagar / Agente de Contas) e **Agenda** usam MCP em processo: "
+                "detecção de intenção (detect), extração de dados (extract), validação (validate) e formatação de confirmação (format). "
+                "Quando o MCP não conseguir interpretar a mensagem, o fluxo faz fallback para a IA. "
+                "O **Agente de Relatórios** usa uma camada leve MCP (detect + extract de período/filtros) antes da análise por IA."
+            )
+            st.info("MCP ativo para Contas, Agenda e Relatórios. Nenhuma configuração adicional necessária.")
+
+            with st.expander("Testar MCP — entradas e saídas para validação", expanded=False):
+                st.caption(
+                    "Digite uma mensagem e escolha o contexto (página). O pipeline MCP será executado e as entradas/saídas de cada etapa serão exibidas. "
+                    "Exemplos: Contas a Pagar — \"registra conta de luz 100 reais vence dia 15\"; Agenda — \"marca reunião amanhã 14h\"; Início — use o Agente de Relatórios para perguntas como \"quanto faturou\" ou \"tenho algum agendamento?\"."
+                )
+                mcp_msg = st.text_input("Mensagem", placeholder="Ex.: registra conta de luz 100 reais vence dia 15", key="mcp_test_msg")
+                mcp_pagina = st.selectbox(
+                    "Contexto (página)",
+                    options=["", "contas_a_pagar", "agenda", "inicio"],
+                    format_func=lambda x: {"": "—", "contas_a_pagar": "Contas a Pagar", "agenda": "Agenda", "inicio": "Início/Relatórios"}[x],
+                    key="mcp_test_pagina",
+                )
+                if st.button("Executar pipeline MCP", key="mcp_run_btn"):
+                    if not (mcp_msg or "").strip():
+                        st.warning("Digite uma mensagem.")
+                    else:
+                        context = {"pagina": mcp_pagina} if mcp_pagina else {}
+                        formatted_response = None
+                        try:
+                            from datetime import date as date_type
+                            detector = MCPDetector(db)
+                            det, interpretacao_origem = detector.detect_with_source(mcp_msg.strip(), context)
+                            st.markdown("#### 1. Detector")
+                            if interpretacao_origem == "ia":
+                                st.success("**Interpretação pela IA:** a mensagem foi classificada pelo modelo de linguagem (confiança das regras era baixa ou resultado era OTHER).")
+                            else:
+                                st.caption("Interpretação por **regras/padrões** (detecção por palavras-chave e contexto).")
+                            st.json({"entrada": {"text": mcp_msg.strip(), "context": context}, "saida": {"action": det.action, "entity": det.entity, "confidence": det.confidence, "extracted_info": det.extracted_info, "interpretacao": interpretacao_origem}})
+
+                            extractor = MCPExtractor(db)
+                            ext = extractor.extract(mcp_msg.strip(), det.action, det.entity, context)
+                            st.markdown("#### 2. Extractor")
+                            st.json({"entrada": {"text": mcp_msg.strip(), "action": det.action, "entity": det.entity, "context": context}, "saida": {"data": ext.data, "confidence": ext.confidence, "missing_fields": ext.missing_fields}})
+
+                            if det.action in ("INSERT", "UPDATE", "DELETE"):
+                                validator = MCPValidator(db)
+                                val = validator.validate(ext.data, det.action, det.entity)
+                                st.markdown("#### 3. Validator")
+                                st.json({"entrada": {"data": ext.data, "action": det.action, "entity": det.entity}, "saida": {"valid": val.valid, "errors": val.errors, "warnings": val.warnings, "message_ia": getattr(val, "message_ia", None)}})
+                                formatter = MCPFormatter(db)
+                                fmt = formatter.format(det.action, ext.data, None, det.entity)
+                                st.markdown("#### 4. Formatter")
+                                st.json({"entrada": {"action": det.action, "data": ext.data, "entity": det.entity}, "saida": {"message": fmt.message, "preview": fmt.preview}})
+                                formatted_response = fmt.message
+                            elif det.action == "LIST" and det.entity in ("contas_pagar", "contas_receber"):
+                                lister = MCPLister(db)
+                                filt = ext.data
+                                di = filt.get("data_inicial")
+                                df = filt.get("data_final")
+                                if isinstance(di, str):
+                                    di = date_type.fromisoformat(di) if di else None
+                                if isinstance(df, str):
+                                    df = date_type.fromisoformat(df) if df else None
+                                lst = lister.list_accounts(det.entity, di, df, filt.get("status"))
+                                st.markdown("#### 3. Lister")
+                                st.json({"entrada": {"entity": det.entity, "data_inicial": str(di) if di else None, "data_final": str(df) if df else None, "status": filt.get("status")}, "saida": {"total": lst.total, "total_valor": lst.total_valor, "items_count": len(lst.items)}})
+                                tit = "Contas a pagar" if det.entity == "contas_pagar" else "Contas a receber"
+                                linhas = [f"**{tit}** ({lst.total} itens, total {format_currency(lst.total_valor or 0)})\n"]
+                                for i, it in enumerate(lst.items[:20], 1):
+                                    nome = it.get("fornecedor") or it.get("cliente") or "—"
+                                    val = it.get("valor", 0)
+                                    venc = it.get("data_vencimento") or ""
+                                    if len(venc) == 10:
+                                        venc = f"{venc[8:10]}/{venc[5:7]}/{venc[:4]}"
+                                    linhas.append(f"{i}. **{nome}** — {format_currency(val)} — venc. {venc}")
+                                if len(lst.items) > 20:
+                                    linhas.append(f"... e mais {len(lst.items) - 20}.")
+                                formatted_response = "\n".join(linhas)
+                            elif det.action == "REPORT" and det.entity == "relatorio":
+                                data_type = ext.data.get("data_type") or "vendas"
+                                if data_type == "estoque":
+                                    data_type = "valor_estoque"
+                                di = ext.data.get("data_inicial")
+                                df = ext.data.get("data_final")
+                                if isinstance(di, str) and di:
+                                    di = date_type.fromisoformat(di[:10])
+                                else:
+                                    di = date_type.today()
+                                if isinstance(df, str) and df:
+                                    df = date_type.fromisoformat(df[:10])
+                                else:
+                                    df = date_type.today()
+                                if df < di:
+                                    df = di
+                                query_analysis = {"data_type": data_type, "period": {"start": di, "end": df, "type": "personalizado"}, "user_id": None}
+                                report_agent = ReportAgentService(db)
+                                query_result = report_agent.execute_query(db, query_analysis)
+                                formatted_response = report_agent.format_response(query_result, query_analysis, mcp_msg.strip())
+                            if formatted_response is not None:
+                                st.markdown("---")
+                                st.markdown("#### Resposta formatada (como na conversa)")
+                                st.markdown(formatted_response)
+                        except Exception as e:
+                            st.error(f"Erro ao executar MCP: {e}")
+
+            with st.expander("Código-fonte MCP (validação)", expanded=False):
+                st.caption("Código dos módulos MCP para referência e validação.")
+                mcp_dir = _ROOT / "mcp"
+                mcp_files = ["schemas.py", "detector.py", "extractor.py", "validator.py", "formatter.py", "lister.py"]
+                tab_names = [f.replace(".py", "") for f in mcp_files]
+                tabs = st.tabs(tab_names)
+                for tab, fname in zip(tabs, mcp_files):
+                    with tab:
+                        path = mcp_dir / fname
+                        if path.exists():
+                            code = path.read_text(encoding="utf-8")
+                            st.code(code, language="python")
+                        else:
+                            st.caption(f"Arquivo não encontrado: {fname}")
 
         with st.form("ai_config_form"):
             provider = st.selectbox(

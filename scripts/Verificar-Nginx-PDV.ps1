@@ -39,8 +39,8 @@ systemctl is-active pdv-streamlit 2>/dev/null || echo "inativo ou nao encontrado
 systemctl status pdv-streamlit --no-pager 2>/dev/null | head -5
 
 echo ""
-echo "=== 6. Porta 8501 em uso? ==="
-ss -tlnp | grep 8501 || echo "porta 8501 nao encontrada"
+echo "=== 6. Portas 8501 (Contabil) e 8502 (PDV) ==="
+ss -tlnp | grep -E "8501|8502" || echo "nenhuma das portas em uso"
 '@
 
 Write-Host "Conectando em $remote (digite a senha SSH quando pedir)..." -ForegroundColor Cyan

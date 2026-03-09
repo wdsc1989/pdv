@@ -14,6 +14,7 @@ from config.prompt_config import (
     PromptConfigManager,
     safe_substitute_prompt,
 )
+from mcp import MCPDetector, MCPExtractor, MCPFormatter, MCPValidator
 from models.personal_agenda import PersonalAgenda
 from services.ai_service import AIService
 
@@ -55,6 +56,103 @@ class AgendaAgentService:
         - message: texto para exibir
         - record: dict com titulo, descricao, data, hora (quando status == "confirm")
         """
+        SUGESTAO_DESCRICAO_PREFIX = "**Sugestão de descrição:**"
+        # --- Resposta à pergunta de descrição opcional: manter contexto, sem novas voltas ---
+        if conversation_history and len(conversation_history) >= 1:
+            last = conversation_history[-1]
+            if (last.get("role") or "").strip().lower() == "assistant":
+                last_content = (last.get("content") or "")
+                if "deseja adicionar alguma descrição" in last_content.lower() or "descrição ao compromisso" in last_content.lower() or SUGESTAO_DESCRICAO_PREFIX.lower() in last_content.lower():
+                    # Mensagem atual é a resposta do usuário (descrição ou "não"); título/data/hora vêm da mensagem anterior
+                    prev_user = None
+                    for m in reversed(conversation_history[:-1]):
+                        if (m.get("role") or "").strip().lower() == "user":
+                            prev_user = (m.get("content") or "").strip()
+                            break
+                    if prev_user and len(prev_user) > 5:
+                        ctx_agenda = {"pagina": "agenda"}
+                        detector = MCPDetector(self.db)
+                        det = detector.detect(prev_user, ctx_agenda)
+                        if det.entity == "agenda" and det.action == "INSERT":
+                            extractor = MCPExtractor(self.db)
+                            ext = extractor.extract(prev_user, "INSERT", "agenda", ctx_agenda)
+                            data = dict(ext.data)
+                            if not ext.missing_fields and data.get("titulo") and data.get("data"):
+                                val = MCPValidator(self.db).validate(data, "INSERT", "agenda")
+                                if val.valid:
+                                    user_reply = (message or "").strip()
+                                    confirmar_desc = user_reply.lower() in ("sim", "confirmar", "confirmo", "ok", "okay", "pode ser", "isso", "quero")
+                                    if confirmar_desc and SUGESTAO_DESCRICAO_PREFIX in last_content:
+                                        m_sug = re.search(r"\*\*Sugestão de descrição:\*\*\s*([^.\n]+)", last_content)
+                                        data["descricao"] = (m_sug.group(1).strip() if m_sug else None) or data.get("titulo") or "Compromisso"
+                                    elif user_reply and user_reply.lower() not in ("não", "nao", "nada", "não quero", "nao quero", "pular", "deixar em branco", "sem descrição", "sem descricao", "opcional", "n"):
+                                        data["descricao"] = user_reply
+                                    else:
+                                        data["descricao"] = None
+                                    data_str = data.get("data") or date.today().isoformat()
+                                    if hasattr(data_str, "isoformat"):
+                                        data_str = data_str.isoformat()
+                                    record = {
+                                        "titulo": (data.get("titulo") or "").strip() or "Compromisso",
+                                        "descricao": (data.get("descricao") or "").strip() or None,
+                                        "data": data_str,
+                                        "hora": (data.get("hora") or "").strip() or None,
+                                    }
+                                    fmt = MCPFormatter(self.db).format("INSERT", record, None, "agenda")
+                                    return {"status": "confirm", "message": fmt.message, "record": record}
+
+        # --- MCP: tentar detect + extract + validate + format (contexto agenda) ---
+        try:
+            ctx_agenda = {"pagina": "agenda"}
+            detector = MCPDetector(self.db)
+            det = detector.detect(message, ctx_agenda)
+            if det.entity == "agenda" and det.action == "INSERT" and det.confidence >= 0.5:
+                extractor = MCPExtractor(self.db)
+                ext = extractor.extract(message, "INSERT", "agenda", ctx_agenda)
+                data = dict(ext.data)
+                if ext.missing_fields:
+                    _q = {
+                        "titulo": "Qual o título do compromisso? (ex.: Reunião, Dentista)",
+                        "data": "Para qual data? (ex.: amanhã, dia 15/03)",
+                    }
+                    questions = [_q.get(m, f"Informe {m}.") for m in ext.missing_fields]
+                    return {
+                        "status": "need_info",
+                        "message": "**Preciso de mais informações:**\n\n" + "\n".join(f"- {q}" for q in questions),
+                        "record": None,
+                    }
+                val = MCPValidator(self.db).validate(data, "INSERT", "agenda")
+                if not val.valid:
+                    msg = getattr(val, "message_ia", None) or "\n".join(val.errors)
+                    return {
+                        "status": "error",
+                        "message": msg,
+                        "record": None,
+                    }
+                descricao = (data.get("descricao") or "").strip() or None
+                # Descrição é opcional: sugerir com base no contexto (título) e perguntar se aprova ou quer outra
+                if not descricao:
+                    titulo = (data.get("titulo") or "").strip() or "Compromisso"
+                    sugestao = titulo if titulo != "Compromisso" else "Compromisso"
+                    return {
+                        "status": "need_info",
+                        "message": f"**Sugestão de descrição:** {sugestao}.\n\nConfirma ou envie outra (opcional — **não** para sem descrição).",
+                        "record": None,
+                    }
+                fmt = MCPFormatter(self.db).format("INSERT", data, None, "agenda")
+                data_str = data.get("data") or date.today().isoformat()
+                if hasattr(data_str, "isoformat"):
+                    data_str = data_str.isoformat()
+                record = {
+                    "titulo": (data.get("titulo") or "").strip() or "Compromisso",
+                    "descricao": descricao,
+                    "data": data_str,
+                    "hora": (data.get("hora") or "").strip() or None,
+                }
+                return {"status": "confirm", "message": fmt.message, "record": record}
+        except Exception:
+            pass
+
         data_hoje = _hoje()
         history_block = ""
         if conversation_history:

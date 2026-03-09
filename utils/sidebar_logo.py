@@ -2,6 +2,7 @@
 Caminho da logo exibida no menu lateral (sidebar).
 A logo é armazenada em uploads/logo/ com nome fixo (logo.png, logo.jpg, etc.).
 """
+import base64
 from pathlib import Path
 
 UPLOADS_DIR = Path(__file__).resolve().parents[1] / "uploads"
@@ -22,6 +23,26 @@ def get_sidebar_logo_path() -> Path | None:
         if path.exists():
             return path
     return None
+
+
+def get_sidebar_logo_base64_data_uri() -> str | None:
+    """
+    Retorna a logo como data URI (data:image/...;base64,...) para uso em HTML <img src="...">.
+    Útil na tela de login para tratar a logo como imagem centralizada dentro de um único bloco.
+    """
+    path = get_sidebar_logo_path()
+    if not path or not path.exists():
+        return None
+    suffix = path.suffix.lower()
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(
+        suffix, "image/png"
+    )
+    try:
+        b = path.read_bytes()
+        b64 = base64.b64encode(b).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+    except Exception:
+        return None
 
 
 def save_sidebar_logo(file_bytes: bytes, filename: str) -> Path:

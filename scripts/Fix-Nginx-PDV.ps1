@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Corrige 502: aplica config Nginx para pdv.srv1140258.hstgr.cloud -> 127.0.0.1:8501 e recarrega.
+  Corrige 502: aplica config Nginx para pdv.srv1140258.hstgr.cloud -> 127.0.0.1:8502 (PDV). Contábil usa 8501.
   Execute e digite a senha SSH quando solicitado.
 #>
 param(
@@ -16,24 +16,24 @@ $sshOpt = "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=15"
 $sshArgs = @($sshOpt + $remote)
 if ($SshKeyPath -and (Test-Path $SshKeyPath)) { $sshArgs = @("-i", $SshKeyPath) + $sshOpt + $remote }
 
-# Script remoto: diagnostico + aplicar config PDV (proxy 8501) + reload nginx
+# Script remoto: diagnostico + aplicar config PDV (proxy 8502) + reload nginx
 # Usar here-string com '@' para nao expandir $http_upgrade etc no PowerShell
 $remoteCmd = @'
 set -e
-echo "=== Diagnostico: Streamlit na porta 8501 ==="
-curl -s -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:8501 || true
+echo "=== Diagnostico: PDV na porta 8502 ==="
+curl -s -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:8502 || true
 echo ""
 echo "=== Nginx sites-enabled (server_name / proxy_pass) ==="
 grep -rh "server_name\|proxy_pass" /etc/nginx/sites-enabled/ 2>/dev/null || true
 echo ""
-echo "=== Aplicando config PDV (proxy 127.0.0.1:8501) ==="
+echo "=== Aplicando config PDV (proxy 127.0.0.1:8502) ==="
 sudo tee /etc/nginx/sites-available/pdv.srv1140258.hstgr.cloud > /dev/null << 'NGXEOF'
 server {
     listen 80;
     server_name pdv.srv1140258.hstgr.cloud;
 
     location / {
-        proxy_pass http://127.0.0.1:8501;
+        proxy_pass http://127.0.0.1:8502;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";

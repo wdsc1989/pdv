@@ -2,6 +2,7 @@ import streamlit as st
 
 from services.auth_service import AuthService
 from utils.sidebar_logo import get_sidebar_logo_path
+from utils.theme import apply_theme
 
 
 def show_sidebar() -> None:
@@ -9,6 +10,7 @@ def show_sidebar() -> None:
     Sidebar com informações do usuário e links para as páginas do PDV.
     Exibe a logo em uploads/logo/ se existir; caso contrário, o título "PDV".
     """
+    apply_theme()
     user = AuthService.get_current_user()
     role = user["role"] if user else None
 

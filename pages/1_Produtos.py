@@ -88,6 +88,146 @@ db = SessionLocal()
 
 try:
     can_edit = role in ("admin", "gerente")
+
+    # Tela dedicada: "Produto salvo" (após confirmar na tela de confirmação)
+    product_just_saved = st.session_state.pop("product_just_saved", None)
+    if product_just_saved and can_edit:
+        st.subheader("✅ Produto salvo")
+        st.success("O produto foi salvo com sucesso.")
+        st.markdown(
+            f"**Código:** {product_just_saved.get('codigo', '-')}  \n"
+            f"**Nome:** {product_just_saved.get('nome', '-')}  \n"
+            f"**Preço de venda:** {format_currency(product_just_saved.get('preco_venda') or 0)}"
+        )
+        st.markdown("---")
+        if st.button("Voltar ao cadastro", type="primary", use_container_width=True, key="btn_voltar_cadastro"):
+            st.session_state.form_version = st.session_state.get("form_version", 0) + 1
+            st.session_state.selected_product_id = None
+            st.rerun()
+        st.stop()
+
+    # Tela dedicada: "Confirmar" (abre ao clicar em Salvar no formulário)
+    draft = st.session_state.get("produto_draft")
+    if draft and can_edit:
+        st.subheader("Confirmar alterações")
+        st.caption("Revise os dados abaixo e confirme para salvar o produto.")
+
+        _campos = [
+            ("Código", "codigo", lambda v: str(v) if v else "-"),
+            ("Nome", "nome", lambda v: str(v) if v else "-"),
+            ("Categoria", "categoria_nome", lambda v: str(v) if v else "(Sem categoria)"),
+            ("Fornecedor", "marca", lambda v: str(v) if v else "-"),
+            ("Ativo", "ativo", lambda v: "Sim" if v else "Não"),
+            ("Preço de custo", "preco_custo", lambda v: format_currency(float(v)) if v is not None else "-"),
+            ("Preço de venda", "preco_venda", lambda v: format_currency(float(v)) if v is not None else "-"),
+            ("Estoque inicial", "estoque_inicial", lambda v: f"{v:.0f}" if v is not None and v == int(v) else f"{v}" if v is not None else "-"),
+            ("Estoque mínimo", "estoque_minimo", lambda v: f"{v:.0f}" if v is not None and v == int(v) else f"{v}" if v is not None else "-"),
+        ]
+        _linhas = []
+        for label, key, fmt in _campos:
+            depois_val = draft.get(key)
+            depois_str = fmt(depois_val)
+            if "antes" in draft:
+                antes_key = "categoria" if key == "categoria_nome" else key
+                antes_val = draft["antes"].get(antes_key)
+                antes_str = fmt(antes_val)
+                mudou = antes_val != depois_val
+                if mudou:
+                    _linhas.append(f"| {label} | {antes_str} | **{depois_str}** |")
+                else:
+                    _linhas.append(f"| {label} | {antes_str} | {depois_str} |")
+            else:
+                _linhas.append(f"| {label} | - | **{depois_str}** |")
+        _tabela = "| Campo | Antes | Depois |\n|:------|:------|:-------|\n" + "\n".join(_linhas)
+        st.markdown(_tabela)
+        entradas_estoque = draft.get("entradas_estoque") or []
+        if entradas_estoque:
+            st.markdown("**Entrada(s) de estoque** (registradas nesta sessão):")
+            for i, e in enumerate(entradas_estoque, 1):
+                qtd = e.get("quantity", 0)
+                obs = e.get("observacao") or "(sem observação)"
+                data_e = e.get("data_entrada")
+                data_str = data_e.strftime("%d/%m/%Y") if hasattr(data_e, "strftime") else str(data_e)
+                st.markdown(f"- **+{qtd:.0f}** un. em {data_str} — {obs}")
+        if draft.get("imagem_bytes"):
+            st.caption("📷 Nova imagem será salva.")
+
+        _col_cf, _col_cc = st.columns(2)
+        with _col_cf:
+            _confirmar = st.button("Confirmar", type="primary", use_container_width=True, key="btn_confirmar_produto_tela")
+        with _col_cc:
+            _cancelar = st.button("Cancelar", type="secondary", use_container_width=True, key="btn_cancelar_produto_tela")
+
+        if _confirmar:
+            prod_id = draft.get("product_id")
+            produto_salvo = None
+            if prod_id:
+                prod = db.get(Product, prod_id)
+                if prod:
+                    prod.codigo = draft["codigo"]
+                    prod.nome = draft["nome"]
+                    prod.categoria = draft.get("categoria_nome")
+                    prod.marca = draft.get("marca") or None
+                    prod.preco_custo = draft["preco_custo"]
+                    prod.preco_venda = draft["preco_venda"]
+                    prod.estoque_atual = draft.get("estoque_inicial") or 0
+                    prod.estoque_minimo = draft.get("estoque_minimo")
+                    prod.ativo = draft["ativo"]
+                    prod.categoria_id = draft.get("categoria_id")
+                    db.commit()
+                    db.refresh(prod)
+                    produto_salvo = prod
+            else:
+                produto_salvo = Product(
+                    codigo=draft["codigo"],
+                    nome=draft["nome"],
+                    categoria=draft.get("categoria_nome"),
+                    marca=draft.get("marca") or None,
+                    preco_custo=draft["preco_custo"],
+                    preco_venda=draft["preco_venda"],
+                    estoque_atual=draft.get("estoque_inicial") or 0,
+                    estoque_minimo=draft.get("estoque_minimo"),
+                    ativo=draft["ativo"],
+                    categoria_id=draft.get("categoria_id"),
+                )
+                db.add(produto_salvo)
+                db.commit()
+                db.refresh(produto_salvo)
+
+            if produto_salvo:
+                if draft.get("imagem_bytes"):
+                    uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
+                    products_dir = uploads_dir / "products"
+                    products_dir.mkdir(parents=True, exist_ok=True)
+                    ext = os.path.splitext(draft.get("imagem_name", ".jpg"))[1].lower() or ".jpg"
+                    filename = f"{produto_salvo.id}{ext}"
+                    rel_path = Path("products") / filename
+                    full_path = products_dir / filename
+                    with open(full_path, "wb") as f:
+                        f.write(draft["imagem_bytes"])
+                    produto_salvo.imagem_path = str(rel_path).replace("\\", "/")
+                    db.commit()
+
+                st.session_state.pop("produto_draft", None)
+                st.session_state.form_version = st.session_state.get("form_version", 0) + 1
+                st.session_state.selected_product_id = None
+                st.session_state.product_just_saved = {
+                    "codigo": produto_salvo.codigo,
+                    "nome": produto_salvo.nome,
+                    "preco_venda": produto_salvo.preco_venda,
+                }
+                st.rerun()
+            else:
+                st.error("Produto não encontrado. O registro pode ter sido excluído.")
+                st.session_state.pop("produto_draft", None)
+                st.rerun()
+
+        if _cancelar:
+            st.session_state.pop("produto_draft", None)
+            st.rerun()
+
+        st.stop()
+
     if not can_edit:
         st.info(
             "Somente **gerente** ou **admin** podem cadastrar ou editar produtos. "
@@ -290,16 +430,23 @@ try:
                         db.add(entry)
                         produto_atual.estoque_atual = (produto_atual.estoque_atual or 0) + entrada_qtd
                         db.commit()
+                        # Guardar para exibir na tela de confirmação ao salvar
+                        key_entradas = f"produto_entradas_{produto_atual.id}"
+                        st.session_state.setdefault(key_entradas, []).append({
+                            "quantity": entrada_qtd,
+                            "observacao": entrada_obs.strip() or None,
+                            "data_entrada": date.today(),
+                        })
                         st.success(f"Entrada de {entrada_qtd:.0f} un. registrada. Estoque atual: {produto_atual.estoque_atual:.0f}.")
                         st.rerun()
             else:
                 estoque_inicial = st.number_input(
-                    "Estoque inicial",
+                    "Estoque inicial (opcional)",
                     min_value=0.0,
                     value=0.0,
                     step=1.0,
                     disabled=not can_edit,
-                    help="Quantidade em estoque ao cadastrar o produto.",
+                    help="Quantidade em estoque ao cadastrar o produto. Pode ser 0; você pode dar entrada depois.",
                     key=f"cad_estoque_inicial_{form_version}",
                 )
 
@@ -445,6 +592,9 @@ try:
                         raw = imagem.getvalue() if imagem else None
                         img_bytes = _comprimir_imagem(_crop_to_ratio(raw, 9, 16)) if raw else None
                         img_name = (imagem.name if imagem else "foto.jpg").rsplit(".", 1)[0] + ".jpg"
+                        entradas_na_sessao = st.session_state.pop(f"produto_entradas_{produto_atual.id}", [])
+                        total_entradas_sessao = sum(e.get("quantity", 0) for e in entradas_na_sessao)
+                        estoque_antes_entradas = (produto_atual.estoque_atual or 0) - total_entradas_sessao
                         st.session_state.produto_draft = {
                             "product_id": produto_atual.id,
                             "codigo": codigo_final,
@@ -459,6 +609,7 @@ try:
                             "categoria_id": categoria_obj.id if categoria_obj else None,
                             "imagem_bytes": img_bytes,
                             "imagem_name": img_name,
+                            "entradas_estoque": entradas_na_sessao,
                             "antes": {
                                 "codigo": produto_atual.codigo or "",
                                 "nome": produto_atual.nome or "",
@@ -467,120 +618,11 @@ try:
                                 "ativo": produto_atual.ativo,
                                 "preco_custo": produto_atual.preco_custo or 0,
                                 "preco_venda": produto_atual.preco_venda or 0,
-                                "estoque_inicial": produto_atual.estoque_atual or 0,
+                                "estoque_inicial": estoque_antes_entradas,
                                 "estoque_minimo": produto_atual.estoque_minimo or 0,
                             },
                         }
                         st.rerun()
-
-        # Bloco de confirmação: exibe alterações abaixo do formulário e pede confirmação
-        draft = st.session_state.get("produto_draft")
-        if draft and can_edit:
-            st.markdown("---")
-            st.subheader("Confirmar alterações")
-            st.caption("Revise os dados abaixo e confirme para salvar definitivamente.")
-
-            campos = [
-                ("Código", "codigo", lambda v: str(v) if v else "-"),
-                ("Nome", "nome", lambda v: str(v) if v else "-"),
-                ("Categoria", "categoria_nome", lambda v: str(v) if v else "(Sem categoria)"),
-                ("Fornecedor", "marca", lambda v: str(v) if v else "-"),
-                ("Ativo", "ativo", lambda v: "Sim" if v else "Não"),
-                ("Preço de custo", "preco_custo", lambda v: format_currency(float(v)) if v is not None else "-"),
-                ("Preço de venda", "preco_venda", lambda v: format_currency(float(v)) if v is not None else "-"),
-                ("Estoque inicial", "estoque_inicial", lambda v: f"{v:.0f}" if v is not None and v == int(v) else f"{v}" if v is not None else "-"),
-                ("Estoque mínimo", "estoque_minimo", lambda v: f"{v:.0f}" if v is not None and v == int(v) else f"{v}" if v is not None else "-"),
-            ]
-
-            linhas = []
-            for label, key, fmt in campos:
-                depois_val = draft.get(key)
-                depois_str = fmt(depois_val)
-                if "antes" in draft:
-                    antes_key = "categoria" if key == "categoria_nome" else key
-                    antes_val = draft["antes"].get(antes_key)
-                    antes_str = fmt(antes_val)
-                    mudou = (antes_val != depois_val)
-                    if mudou:
-                        linhas.append(f"| {label} | {antes_str} | **{depois_str}** |")
-                    else:
-                        linhas.append(f"| {label} | {antes_str} | {depois_str} |")
-                else:
-                    linhas.append(f"| {label} | - | **{depois_str}** |")
-
-            tabela = "| Campo | Antes | Depois |\n|:------|:------|:-------|\n" + "\n".join(linhas)
-            st.markdown(tabela)
-
-            if draft.get("imagem_bytes"):
-                st.caption("📷 Nova imagem será salva.")
-
-            col_cf, col_cc = st.columns(2)
-            with col_cf:
-                confirmar = st.button("Confirmar", type="primary", use_container_width=True, key="btn_confirmar_produto")
-            with col_cc:
-                cancelar = st.button("Cancelar", type="secondary", use_container_width=True, key="btn_cancelar_produto")
-
-            if confirmar:
-                prod_id = draft.get("product_id")
-                if prod_id:
-                    prod = db.get(Product, prod_id)
-                    if prod:
-                        prod.codigo = draft["codigo"]
-                        prod.nome = draft["nome"]
-                        prod.categoria = draft.get("categoria_nome")
-                        prod.marca = draft.get("marca") or None
-                        prod.preco_custo = draft["preco_custo"]
-                        prod.preco_venda = draft["preco_venda"]
-                        prod.estoque_atual = draft["estoque_inicial"]
-                        prod.estoque_minimo = draft.get("estoque_minimo")
-                        prod.ativo = draft["ativo"]
-                        prod.categoria_id = draft.get("categoria_id")
-                        db.commit()
-                        db.refresh(prod)
-                        produto_salvo = prod
-                else:
-                    produto_salvo = Product(
-                        codigo=draft["codigo"],
-                        nome=draft["nome"],
-                        categoria=draft.get("categoria_nome"),
-                        marca=draft.get("marca") or None,
-                        preco_custo=draft["preco_custo"],
-                        preco_venda=draft["preco_venda"],
-                        estoque_atual=draft["estoque_inicial"],
-                        estoque_minimo=draft.get("estoque_minimo"),
-                        ativo=draft["ativo"],
-                        categoria_id=draft.get("categoria_id"),
-                    )
-                    db.add(produto_salvo)
-                    db.commit()
-                    db.refresh(produto_salvo)
-
-                if draft.get("imagem_bytes") and produto_salvo:
-                    uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
-                    products_dir = uploads_dir / "products"
-                    products_dir.mkdir(parents=True, exist_ok=True)
-                    ext = os.path.splitext(draft.get("imagem_name", ".jpg"))[1].lower() or ".jpg"
-                    filename = f"{produto_salvo.id}{ext}"
-                    rel_path = Path("products") / filename
-                    full_path = products_dir / filename
-                    with open(full_path, "wb") as f:
-                        f.write(draft["imagem_bytes"])
-                    produto_salvo.imagem_path = str(rel_path).replace("\\", "/")
-                    db.commit()
-
-                st.success(
-                    f"Produto salvo: código **{produto_salvo.codigo}**, "
-                    f"nome **{produto_salvo.nome}**, preço de venda "
-                    f"**{format_currency(produto_salvo.preco_venda)}**."
-                )
-                st.session_state.pop("produto_draft", None)
-                st.session_state.form_version = form_version + 1
-                st.session_state.selected_product_id = None
-                st.rerun()
-
-            if cancelar:
-                st.session_state.pop("produto_draft", None)
-                st.rerun()
 
         if excluir and can_edit and produto_atual:
             db.delete(produto_atual)

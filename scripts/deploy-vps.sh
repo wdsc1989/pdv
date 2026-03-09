@@ -23,7 +23,8 @@ DB_USER="${DB_USER//$'\r'/}"
 DB_PASS="${DB_PASS//$'\r'/}"
 
 REPO_URL="https://github.com/wdsc1989/pdv.git"
-STREAMLIT_PORT=8501
+# Contábil usa 8501; PDV usa 8502 para não conflitar na mesma VPS.
+STREAMLIT_PORT=8502
 SERVER_NAME="pdv.srv1140258.hstgr.cloud"
 
 # Usuário e home (quem está rodando o script via SSH)
@@ -153,7 +154,7 @@ SYSTEMD_EOF
 sudo systemctl daemon-reload
 sudo systemctl enable pdv-streamlit
 sudo systemctl stop pdv-streamlit 2>/dev/null || true
-sudo fuser -k 8501/tcp 2>/dev/null || true
+sudo fuser -k 8502/tcp 2>/dev/null || true
 sleep 2
 sudo systemctl start pdv-streamlit
 

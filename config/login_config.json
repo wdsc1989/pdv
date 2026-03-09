@@ -1,0 +1,10 @@
+{
+  "login_title": "🔐 PDV ",
+  "login_subtitle": "Sistema de Ponto de Venda para loja de roupas",
+  "login_show_title": false,
+  "login_show_subtitle": false,
+  "login_show_logo": true,
+  "login_logo_width": 300,
+  "login_logo_align": "centro",
+  "theme_visual": "identidade_visual"
+}

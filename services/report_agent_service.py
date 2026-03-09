@@ -9,7 +9,7 @@ import re
 from calendar import monthrange
 from collections import defaultdict
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Optional
+from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
@@ -33,6 +33,7 @@ from config.prompt_config import (
     PromptConfigManager,
     safe_substitute_prompt,
 )
+from mcp import MCPDetector, MCPExtractor
 from services.ai_service import AIService
 from utils.formatters import format_currency, format_date
 
@@ -119,6 +120,77 @@ class ReportAgentService:
                 "intent": "error",
                 "error": "Serviço de IA não disponível. Configure em Administração > Configuração de IA.",
             }
+
+        # --- Camada leve MCP: detect + extract; na página Início buscar contas e agenda quando o usuário perguntar ---
+        try:
+            detector = MCPDetector(self.db)
+            det = detector.detect(query, {"pagina": "inicio"})
+            extractor = MCPExtractor(self.db)
+            today = date.today()
+
+            # LIST contas a pagar / contas a receber: buscar e listar no chat
+            if det.action == "LIST" and det.entity in ("contas_pagar", "contas_receber") and det.confidence >= 0.5:
+                ext = extractor.extract(query, "LIST", det.entity, None)
+                period_info = {}
+                if ext.data and ext.data.get("data_inicial") and ext.data.get("data_final"):
+                    period_info = {"start": ext.data["data_inicial"], "end": ext.data["data_final"]}
+                else:
+                    period_info = {"type": "mes_atual"}
+                period = self._process_period(period_info)
+                return {
+                    "intent": "consulta",
+                    "data_type": det.entity,
+                    "period": period,
+                    "resposta_direta": None,
+                    "filters": ext.data or {},
+                }
+
+            # LIST ou REPORT agenda: buscar compromissos (ex.: "tenho agendamento?", "meus compromissos")
+            if det.entity == "agenda" and det.action in ("LIST", "REPORT") and det.confidence >= 0.5:
+                end_agenda = today + relativedelta(days=7)
+                period_info = {"start": today.isoformat(), "end": end_agenda.isoformat()}
+                period = self._process_period(period_info)
+                return {
+                    "intent": "consulta",
+                    "data_type": "agenda",
+                    "period": period,
+                    "resposta_direta": None,
+                    "filters": {},
+                }
+
+            # REPORT relatório: extract período e data_type (vendas, estoque, contas, agenda)
+            if det.action == "REPORT" and det.entity == "relatorio" and det.confidence >= 0.5:
+                ext = extractor.extract(query, "REPORT", "relatorio", None)
+                if ext.confidence >= 0.6 and ext.data:
+                    data_type_raw = (ext.data.get("data_type") or "vendas").strip().lower()
+                    data_type_map = {
+                        "vendas": "resumo_periodo",
+                        "estoque": "valor_estoque",
+                        "contas_pagar": "contas_pagar",
+                        "contas_receivable": "contas_receber",
+                        "agenda": "agenda",
+                    }
+                    data_type = data_type_map.get(data_type_raw, "resumo_periodo")
+                    start_str = ext.data.get("data_inicial")
+                    end_str = ext.data.get("data_final")
+                    period_info = {}
+                    if start_str and end_str:
+                        period_info = {"start": start_str, "end": end_str}
+                    elif data_type == "agenda":
+                        end_agenda = today + relativedelta(days=7)
+                        period_info = {"start": today.isoformat(), "end": end_agenda.isoformat()}
+                    else:
+                        period_info = {"type": "ultimo_mes"}
+                    period = self._process_period(period_info)
+                    return {
+                        "intent": "consulta",
+                        "data_type": data_type,
+                        "period": period,
+                        "resposta_direta": None,
+                        "filters": ext.data.get("filters") or {},
+                    }
+        except Exception:
+            pass
 
         data_hoje = date.today().strftime("%d/%m/%Y")
         history_block = ""
@@ -645,6 +717,7 @@ class ReportAgentService:
         if not isinstance(end_date, date):
             end_date = default_end
 
+        user_id = query_analysis.get("user_id")
         try:
             if data_type == "sql":
                 sql_query = query_analysis.get("sql_query") or ""
@@ -663,6 +736,8 @@ class ReportAgentService:
                 return self._query_contas_pagar(db, start_date, end_date)
             if data_type == "contas_receber":
                 return self._query_contas_receber(db, start_date, end_date)
+            if data_type == "agenda":
+                return self._query_agenda(db, user_id, start_date, end_date)
             if data_type == "analise_avancada":
                 return self._query_analise_avancada(db, start_date, end_date)
             # default
@@ -913,6 +988,41 @@ class ReportAgentService:
             },
         }
 
+    def _query_agenda(
+        self,
+        db: Session,
+        user_id: Optional[int],
+        start_date: date,
+        end_date: date,
+    ) -> Dict[str, Any]:
+        """Compromissos da agenda pessoal no período (do usuário logado)."""
+        q = (
+            db.query(PersonalAgenda)
+            .filter(PersonalAgenda.data >= start_date)
+            .filter(PersonalAgenda.data <= end_date)
+        )
+        if user_id is not None:
+            q = q.filter(PersonalAgenda.user_id == user_id)
+        compromissos = q.order_by(PersonalAgenda.data, PersonalAgenda.hora).all()
+        rows = [
+            {
+                "titulo": c.titulo,
+                "descricao": c.descricao or "",
+                "data": c.data.strftime("%d/%m/%Y"),
+                "hora": c.hora or "",
+            }
+            for c in compromissos
+        ]
+        return {
+            "type": "agenda",
+            "data": {
+                "compromissos": rows,
+                "total": len(rows),
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+            },
+        }
+
     def _fetch_news_headlines(self, limit: int = 5) -> List[Dict[str, str]]:
         """Busca manchetes de economia/varejo em RSS para contexto da análise."""
         urls = [
@@ -1056,10 +1166,12 @@ class ReportAgentService:
             .all()
         )
         total_contas_receber_semana = sum(c.valor for c in contas_receber_semana)
-        # Contas a pagar em aberto (não pagas) para listar na análise; atualiza status para identificar atrasadas
+        # Contas a pagar em aberto: somente vencimento até 15 dias à frente (ou atrasadas)
+        limite_15_dias = today + relativedelta(days=15)
         contas_pagar_abertas = (
             db.query(AccountPayable)
             .filter(AccountPayable.data_pagamento.is_(None))
+            .filter(AccountPayable.data_vencimento <= limite_15_dias)
             .order_by(AccountPayable.data_vencimento)
             .limit(50)
             .all()
@@ -1078,11 +1190,10 @@ class ReportAgentService:
             if c.status == "atrasada":
                 contas_atrasadas_lista.append(item)
         # Contas a receber: somente atrasadas e que vencem nos próximos 15 dias
-        limite_proximas = today + relativedelta(days=15)
         contas_receber_abertas = (
             db.query(AccountReceivable)
             .filter(AccountReceivable.data_recebimento.is_(None))
-            .filter(AccountReceivable.data_vencimento <= limite_proximas)
+            .filter(AccountReceivable.data_vencimento <= limite_15_dias)
             .order_by(AccountReceivable.data_vencimento)
             .all()
         )
@@ -1165,7 +1276,7 @@ class ReportAgentService:
             "contas_a_receber_em_atraso": contas_receber_atrasadas_lista,
             "contas_a_receber_proximas_15_dias": contas_receber_proximas_lista,
             "agenda_hoje": agenda_hoje_lista,
-            "agenda_proximos_7_dias": agenda_proximos_lista,
+            "agenda_proximos_15_dias": agenda_proximos_lista,
             "link_contas_pagar": "/5_Contas_a_Pagar".strip(),
             "link_contas_pagar_atraso": "/5_Contas_a_Pagar?filtro=atraso".strip(),
             "link_contas_receber_atraso": "/5_Contas_a_Pagar?tab=receber&filtro=atraso".strip(),
@@ -1254,47 +1365,54 @@ class ReportAgentService:
         return "".join(parts)
 
     def _initial_analysis_fallback(self, payload: Dict[str, Any]) -> str:
-        """Fallback quando a IA não está disponível."""
+        """Fallback quando a IA não está disponível. Layout em MD com ##/###."""
         bloco = (
             f"## Análise do dia – {payload.get('data_hoje', '')} ({payload.get('dia_semana_hoje', '')})\n\n"
-            f"**Tendência (últimas 8 semanas):** No mesmo dia da semana o histórico de vendas soma "
+            f"### Tendência para hoje\n\n"
+            f"No mesmo dia da semana o histórico de vendas (últimas 8 semanas) soma "
             f"{format_currency(payload.get('total_historico_no_mesmo_dia_semana', 0))}; "
             f"média diária {format_currency(payload.get('media_diaria_historico', 0))}.\n\n"
-            f"**Sazonalidade do mês:** {payload.get('sazonalidade_moda_feminina_mes', payload.get('sazonalidade_mercado_mes', ''))}\n\n"
-            f"**Contas a pagar esta semana** ({payload.get('inicio_semana', '')} a {payload.get('fim_semana', '')}): "
-            f"{format_currency(payload.get('contas_a_pagar_esta_semana', 0))} ({payload.get('quantidade_contas_semana', 0)} títulos).\n\n"
-            f"**Contas a receber (fiado) esta semana:** "
-            f"{format_currency(payload.get('contas_a_receber_esta_semana', 0))} ({payload.get('quantidade_contas_receber_semana', 0)} títulos).\n\n"
+            f"### Sazonalidade do mês\n\n"
+            f"{payload.get('sazonalidade_moda_feminina_mes', payload.get('sazonalidade_mercado_mes', ''))}\n\n"
+            f"### Resumo da semana\n\n"
+            f"- **Contas a pagar** ({payload.get('inicio_semana', '')} a {payload.get('fim_semana', '')}): "
+            f"{format_currency(payload.get('contas_a_pagar_esta_semana', 0))} ({payload.get('quantidade_contas_semana', 0)} títulos)\n"
+            f"- **Contas a receber (fiado):** "
+            f"{format_currency(payload.get('contas_a_receber_esta_semana', 0))} ({payload.get('quantidade_contas_receber_semana', 0)} títulos)\n\n"
         )
         contas_abertas = payload.get("contas_a_pagar_abertas") or []
         contas_atrasadas = payload.get("contas_a_pagar_em_atraso") or []
+        if contas_atrasadas or contas_abertas:
+            bloco += "### Contas a pagar (próximos 15 dias)\n\n"
         if contas_atrasadas:
             bloco += "**⚠️ Em atraso:**\n\n"
-            for i, c in enumerate(contas_atrasadas, 1):
-                bloco += f"{i}. **{c.get('fornecedor', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}\n"
+            for c in contas_atrasadas:
+                bloco += f"- **{c.get('fornecedor', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}\n"
             bloco += "\n"
         if contas_abertas:
-            bloco += "**Contas a pagar (em aberto):**\n\n"
-            for i, c in enumerate(contas_abertas, 1):
+            bloco += "**Em aberto:**\n\n"
+            for c in contas_abertas:
                 atraso = " — *atrasada*" if c.get("status") == "atrasada" else ""
-                bloco += f"{i}. **{c.get('fornecedor', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}{atraso}\n"
+                bloco += f"- **{c.get('fornecedor', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}{atraso}\n"
             bloco += "\n"
         contas_rec_atrasadas = payload.get("contas_a_receber_em_atraso") or []
         contas_rec_proximas = payload.get("contas_a_receber_proximas_15_dias") or []
+        if contas_rec_atrasadas or contas_rec_proximas:
+            bloco += "### Contas a receber – fiado (próximos 15 dias)\n\n"
         if contas_rec_atrasadas:
-            bloco += "**⚠️ Contas a receber em atraso (a cobrar):**\n\n"
-            for i, c in enumerate(contas_rec_atrasadas, 1):
-                bloco += f"{i}. **{c.get('cliente', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}\n"
+            bloco += "**⚠️ Em atraso (a cobrar):**\n\n"
+            for c in contas_rec_atrasadas:
+                bloco += f"- **{c.get('cliente', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}\n"
             bloco += "\n"
         if contas_rec_proximas:
-            bloco += "**Contas a receber (próximos 15 dias):**\n\n"
-            for i, c in enumerate(contas_rec_proximas, 1):
-                bloco += f"{i}. **{c.get('cliente', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}\n"
+            bloco += "**Próximos 15 dias:**\n\n"
+            for c in contas_rec_proximas:
+                bloco += f"- **{c.get('cliente', '')}** — {format_currency(c.get('valor', 0))} — Vencimento: {c.get('data_vencimento', '')}\n"
             bloco += "\n"
         agenda_hoje = payload.get("agenda_hoje") or []
-        agenda_proximos = payload.get("agenda_proximos_7_dias") or []
+        agenda_proximos = payload.get("agenda_proximos_15_dias") or []
         if agenda_hoje or agenda_proximos:
-            bloco += "**Compromissos pessoais (agenda):**\n\n"
+            bloco += "### Compromissos pessoais (agenda – próximos 15 dias)\n\n"
             if agenda_hoje:
                 bloco += "*Hoje:*\n"
                 for a in agenda_hoje:
@@ -1303,7 +1421,7 @@ class ReportAgentService:
                     bloco += f"- **{a.get('titulo', '')}**{hora_txt} — {a.get('descricao', '')}\n"
                 bloco += "\n"
             if agenda_proximos:
-                bloco += "*Próximos 7 dias:*\n"
+                bloco += "*Próximos 15 dias:*\n"
                 for a in agenda_proximos:
                     hora = a.get("hora") or ""
                     hora_txt = f" às {hora}" if hora else ""
@@ -1311,7 +1429,8 @@ class ReportAgentService:
                 bloco += "\n"
         if payload.get("proximo_virada_mes") and payload.get("sazonalidade_proximo_mes"):
             bloco += (
-                f"**Próxima semana** ({payload.get('proxima_semana_inicio', '')} a {payload.get('proxima_semana_fim', '')}): "
+                f"### Insights para a semana que começa\n\n"
+                f"({payload.get('proxima_semana_inicio', '')} a {payload.get('proxima_semana_fim', '')}): "
                 f"{payload.get('sazonalidade_proximo_mes', '')}\n\n"
             )
         bloco += "*Configure a IA em Administração para uma análise completa com pontos fortes e fracos.*"
@@ -1501,6 +1620,24 @@ class ReportAgentService:
                 f"Total em aberto: {format_currency(data.get('total_abertas', 0))} | "
                 f"Total recebidas: {format_currency(data.get('total_recebidas', 0))}\n\n"
                 + "\n".join(lines or ["Nenhuma conta no período."])
+            )
+        if query_type == "agenda":
+            compromissos = data.get("compromissos", [])
+            total = len(compromissos)
+            if total == 0:
+                return (
+                    "**Sua agenda**\n\n"
+                    "Você não tem nenhum compromisso agendado no período. "
+                    "Para cadastrar, use a página **Agenda** ou peça: *\"Agendar reunião amanhã às 14h\"*."
+                )
+            lines = []
+            for c in compromissos:
+                hora_txt = f" às {c.get('hora')}" if c.get("hora") else ""
+                desc = f" — {c.get('descricao')}" if c.get("descricao") else ""
+                lines.append(f"- **{c.get('titulo', '')}** — {c.get('data', '')}{hora_txt}{desc}")
+            return (
+                "**Sua agenda (compromissos no período)**\n\n"
+                + "\n".join(lines)
             )
         if query_type == "analise_avancada":
             per = data.get("periodo_consulta", {})

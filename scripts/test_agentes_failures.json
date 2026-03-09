@@ -1,0 +1,57 @@
+[
+  {
+    "domain": "contas_receber",
+    "input": "Lucia valor de 250 reais dia 30",
+    "context": {
+      "pagina": "contas_a_pagar"
+    },
+    "expected_entity": "contas_receber",
+    "expected_action": "INSERT",
+    "got_entity": "contas_pagar",
+    "got_action": "INSERT"
+  },
+  {
+    "domain": "contas_receber",
+    "input": "Lucia valor de 250 real dia 30",
+    "context": {
+      "pagina": "contas_a_pagar"
+    },
+    "expected_entity": "contas_receber",
+    "expected_action": "INSERT",
+    "got_entity": "contas_pagar",
+    "got_action": "INSERT"
+  },
+  {
+    "domain": "contas_receber",
+    "input": "Lucia  valor de 250 reais dia 30",
+    "context": {
+      "pagina": "contas_a_pagar"
+    },
+    "expected_entity": "contas_receber",
+    "expected_action": "INSERT",
+    "got_entity": "contas_pagar",
+    "got_action": "INSERT"
+  },
+  {
+    "domain": "contas_receber",
+    "input": "Willian valor de 500",
+    "context": {
+      "pagina": "contas_a_pagar"
+    },
+    "expected_entity": "contas_receber",
+    "expected_action": "INSERT",
+    "got_entity": "contas_pagar",
+    "got_action": "INSERT"
+  },
+  {
+    "domain": "contas_receber",
+    "input": "Willian  valor de 500",
+    "context": {
+      "pagina": "contas_a_pagar"
+    },
+    "expected_entity": "contas_receber",
+    "expected_action": "INSERT",
+    "got_entity": "contas_pagar",
+    "got_action": "INSERT"
+  }
+]

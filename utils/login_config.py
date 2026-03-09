@@ -9,8 +9,12 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "login_config.jso
 DEFAULTS = {
     "login_title": "🔐 PDV - Loja de Roupas",
     "login_subtitle": "Sistema de Ponto de Venda para loja de roupas",
+    "login_show_title": True,
+    "login_show_subtitle": True,
     "login_show_logo": True,
     "login_logo_width": 280,
+    "login_logo_align": "centro",  # "centro" | "esquerda" | "direita" — alinhamento da logo na tela de login
+    "theme_visual": "default",  # "default" = tema Streamlit | "identidade_visual" = cores/fontes da marca
 }
 
 

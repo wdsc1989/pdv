@@ -52,10 +52,10 @@ echo '--- Git pull ---'
 git fetch origin
 git reset --hard origin/main
 git pull origin main
-echo '--- Parar servico e liberar porta 8501 ---'
+echo '--- Parar servico e liberar porta 8502 (PDV) ---'
 sudo systemctl stop pdv-streamlit 2>/dev/null || true
 sleep 2
-sudo fuser -k 8501/tcp 2>/dev/null || true
+sudo fuser -k 8502/tcp 2>/dev/null || true
 sleep 1
 echo '--- Iniciar servico ---'
 sudo systemctl start pdv-streamlit
