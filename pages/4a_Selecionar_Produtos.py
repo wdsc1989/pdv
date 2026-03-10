@@ -13,15 +13,18 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 from sqlalchemy import select
 
-from config.database import SessionLocal
+from config.database import init_db, SessionLocal
 from models.cash_session import CashSession
 from models.product import Product
+from models.user_cart import UserCartItem
 from services.auth_service import AuthService
 from utils.formatters import format_currency
 from utils.navigation import show_sidebar
 
+init_db()
 
-st.set_page_config(page_title="Buscar produto", page_icon="🔍", layout="wide")
+
+st.set_page_config(page_title="Buscar produto", page_icon=":material/search:", layout="wide")
 
 AuthService.require_roles(["admin", "gerente", "vendedor"])
 show_sidebar()
@@ -52,51 +55,44 @@ try:
             st.switch_page("pages/4_Vendas.py")
         st.stop()
 
+    user = AuthService.get_current_user()
+    user_id = user.get("id") if user else None
+
     if "cart_items" not in st.session_state:
         st.session_state.cart_items = []
+
+    # Carrega carrinho persistido do banco quando vazio (quantidades fixas ao refazer login)
+    if user_id is not None and len(st.session_state.cart_items) == 0:
+        saved = (
+            db.execute(
+                select(UserCartItem, Product)
+                .join(Product, UserCartItem.product_id == Product.id)
+                .where(UserCartItem.user_id == user_id)
+                .where(UserCartItem.quantity > 0)
+            )
+            .all()
+        )
+        if saved:
+            st.session_state.cart_items = [
+                {
+                    "product_id": row[1].id,
+                    "codigo": row[1].codigo,
+                    "nome": row[1].nome,
+                    "quantidade": int(row[0].quantity),
+                    "preco_venda": row[1].preco_venda,
+                    "preco_custo": row[1].preco_custo,
+                }
+                for row in saved
+            ]
 
     cart = st.session_state.cart_items
     n_itens = sum(int(item["quantidade"]) for item in cart)
 
-    st.markdown(
-        "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>🔍 Buscar produto</strong></p>"
-        "<p style='margin:0; font-size:0.8rem; color:#666;'>Selecione os produtos e as quantidades. Clique em Voltar para vendas quando terminar.</p>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("---")
-
-    # Termos para autocomplete: nomes, códigos, palavras dos nomes
-    termos_busca = set()
-    for p in produtos:
-        if p.nome:
-            termos_busca.add(p.nome.strip())
-            for palavra in p.nome.lower().split():
-                if len(palavra) >= 2:
-                    termos_busca.add(palavra.strip(".,;:"))
-        if p.codigo:
-            termos_busca.add(str(p.codigo))
-    opcoes_busca = ["(Todas)"] + sorted(termos_busca, key=lambda x: (x or "").lower())
-
-    # Filtros: busca (selectbox com digitação para filtrar), categoria, fornecedor, estoque, ordenação
+    # Filtros: busca (campo de texto — digite e pressione Enter para filtrar), categoria, etc.
     categorias = sorted({p.categoria for p in produtos if p.categoria}, key=lambda x: (x or "").lower())
     marcas = sorted({p.marca for p in produtos if p.marca}, key=lambda x: (x or "").lower())
 
-    # Linha 1: Voltar + Busca (selectbox: digite para filtrar opções, ex: "Ves" mostra "vestido")
-    col_voltar, col_busca = st.columns([1, 4])
-    with col_voltar:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Voltar para vendas", type="primary", use_container_width=True, key="btn_voltar_vendas"):
-            st.switch_page("pages/4_Vendas.py")
-
-    with col_busca:
-        termo_sel = st.selectbox(
-            "Buscar (digite para filtrar: ex. Ves → vestido)",
-            options=opcoes_busca,
-            key="busca_selecionar_prod",
-        )
-        termo = "" if termo_sel == "(Todas)" else (termo_sel or "").strip().lower()
-
-    # Linha 2: Categoria, Fornecedor, Estoque, Ordenar
+    # Linha 1: Filtros (Categoria, Fornecedor, Estoque, Ordenar)
     col_cat, col_forn, col_estoque, col_ordem = st.columns(4)
     with col_cat:
         filtro_cat = st.selectbox(
@@ -125,6 +121,82 @@ try:
             options=["Nome", "Código", "Preço (menor)", "Preço (maior)", "Estoque"],
             key="ordem_sel",
         )
+
+    # Linha 2: Busca — lista atualiza ao pressionar Enter ou após 2 s de pausa na digitação
+    termo = st.text_input(
+        "Buscar",
+        placeholder="Pesquisar...",
+        key="busca_selecionar_prod",
+    )
+    termo = (termo or "").strip().lower()
+
+    # Debounce + Enter aplicam o filtro; loop mantém foco na caixa após cada rerun
+    _busca_debounce_js = """
+    <div id="busca-debounce-helper"></div>
+    <script>
+    (function() {
+        var DELAY_MS = 500;
+        var REFOCUS_KEY = "pdv_refocus_busca";
+        var PLACEHOLDER_PART = "Pesquisar";
+        function findBuscaInput() {
+            var inputs = document.querySelectorAll('input[placeholder*="' + PLACEHOLDER_PART + '"]');
+            return inputs.length > 0 ? inputs[0] : null;
+        }
+        function startRefocusLoop() {
+            if (sessionStorage.getItem(REFOCUS_KEY) !== "1") return;
+            var count = 0;
+            var maxTicks = 6000;
+            var iv = setInterval(function() {
+                count++;
+                if (count > maxTicks) {
+                    clearInterval(iv);
+                    sessionStorage.removeItem(REFOCUS_KEY);
+                    return;
+                }
+                var el = findBuscaInput();
+                if (el && document.activeElement !== el) el.focus();
+            }, 50);
+        }
+        function attachDebounce() {
+            var input = findBuscaInput();
+            if (!input) return;
+            if (input._buscaDebounceAttached) return;
+            input._buscaDebounceAttached = true;
+            var timeout;
+            input.addEventListener("input", function() {
+                clearTimeout(timeout);
+                timeout = setTimeout(function() {
+                    sessionStorage.setItem(REFOCUS_KEY, "1");
+                    input.blur();
+                    var e = new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true });
+                    input.dispatchEvent(e);
+                }, DELAY_MS);
+            });
+            input.addEventListener("keydown", function(ev) {
+                if (ev.key === "Enter") sessionStorage.setItem(REFOCUS_KEY, "1");
+            });
+        }
+        function init() {
+            if (sessionStorage.getItem(REFOCUS_KEY) === "1") startRefocusLoop();
+            attachDebounce();
+        }
+        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+        else init();
+        setTimeout(init, 200);
+        setTimeout(init, 500);
+        setTimeout(init, 1000);
+        setTimeout(init, 2000);
+    })();
+    </script>
+    """
+    try:
+        st.html(_busca_debounce_js, unsafe_allow_javascript=True)
+    except (AttributeError, TypeError):
+        pass  # Streamlit antigo sem st.html: use Enter para filtrar
+
+    # Voltar para vendas (abaixo da pesquisa, largura fixa — não responsivo)
+    if st.button("Voltar para vendas", type="primary", key="btn_voltar_vendas", use_container_width=False):
+        st.switch_page("pages/4_Vendas.py")
 
     # Aplica filtros
     produtos_filtrados = produtos
@@ -167,76 +239,115 @@ try:
     if not produtos_filtrados:
         st.info("Nenhum produto encontrado para este filtro.")
     else:
+        st.markdown(
+            "<style>"
+            "[data-testid='stNumberInput'] input { "
+            "width: 70px !important; max-width: 70px !important; min-width: 70px !important; "
+            "box-sizing: border-box !important; } "
+            "div[data-testid='stHorizontalBlock']:has(.qtd-col-spacer) { align-items: stretch !important; } "
+            "div[data-testid='stHorizontalBlock']:has(.qtd-col-spacer) > div:first-child { "
+            "display: flex !important; flex-direction: column !important; min-height: 140px !important; align-self: stretch !important; } "
+            "div[data-testid='stHorizontalBlock']:has(.qtd-col-spacer) > div:first-child > div:first-child { "
+            "flex: 1 1 0 !important; min-height: 0 !important; } "
+            "</style>",
+            unsafe_allow_html=True,
+        )
         uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
-        # Grid 4 colunas
-        COLS = 4
-        for i in range(0, len(produtos_filtrados), COLS):
-            cols = st.columns(COLS)
-            for j, c in enumerate(cols):
-                idx = i + j
-                if idx >= len(produtos_filtrados):
-                    break
-                p = produtos_filtrados[idx]
-                with c:
-                    img_path = None
-                    if p.imagem_path:
-                        candidate = uploads_dir / p.imagem_path
-                        if candidate.exists():
-                            img_path = candidate
+        # Cabeçalho da tabela: Quantidade, Imagem, Código, Nome, Categoria, Estoque
+        w = [0.1, 0.12, 0.12, 0.35, 0.2, 0.11]
+        h_cols = st.columns(w)
+        with h_cols[0]:
+            st.markdown("**Quantidade**")
+        with h_cols[1]:
+            st.markdown("**Imagem**")
+        with h_cols[2]:
+            st.markdown("**Código**")
+        with h_cols[3]:
+            st.markdown("**Nome**")
+        with h_cols[4]:
+            st.markdown("**Categoria**")
+        with h_cols[5]:
+            st.markdown("**Estoque**")
+        st.markdown("---")
 
-                    st.markdown(f"**{p.codigo}**")
-                    if img_path:
-                        st.image(str(img_path), width=90)
+        for p in produtos_filtrados:
+            row = st.columns(w)
+            with row[0]:
+                st.markdown("<div class='qtd-col-spacer'></div>", unsafe_allow_html=True)
+                qtd_atual = sum(int(item["quantidade"]) for item in cart if item["product_id"] == p.id)
+                nova_qtd = st.number_input(
+                    "Quantidade",
+                    min_value=0,
+                    value=int(qtd_atual),
+                    step=1,
+                    key=f"qty_sel_{p.id}",
+                    label_visibility="collapsed",
+                )
+                if int(nova_qtd) != qtd_atual:
+                    novo_cart = list(cart)
+                    if nova_qtd <= 0:
+                        novo_cart = [item for item in novo_cart if item["product_id"] != p.id]
                     else:
-                        st.markdown(
-                            "<div style='width:90px;height:70px;background:#eee;"
-                            "border-radius:4px;display:flex;align-items:center;"
-                            "justify-content:center;font-size:10px;color:#999;'>"
-                            "Sem imagem</div>",
-                            unsafe_allow_html=True,
-                        )
-                    nome_safe = (p.nome or "").replace("<", "&lt;").replace(">", "&gt;")[:22]
-                    if len(p.nome or "") > 22:
-                        nome_safe += "..."
-                    st.markdown(f"{nome_safe}")
-                    st.markdown(f"**{format_currency(p.preco_venda)}**")
-                    estoque = p.estoque_atual if p.estoque_atual is not None else 0
-                    estoque_str = f"{estoque:.0f}" if estoque == int(estoque) else f"{estoque:.2f}"
-                    st.caption(f"Estoque: {estoque_str}")
-
-                    qtd_atual = sum(int(item["quantidade"]) for item in cart if item["product_id"] == p.id)
-                    nova_qtd = st.number_input(
-                        "Qtde",
-                        min_value=0,
-                        value=int(qtd_atual),
-                        step=1,
-                        key=f"qty_sel_{p.id}",
-                        label_visibility="collapsed",
-                    )
-                    if int(nova_qtd) != qtd_atual:
-                        novo_cart = list(cart)
-                        if nova_qtd <= 0:
-                            novo_cart = [item for item in novo_cart if item["product_id"] != p.id]
+                        for item in novo_cart:
+                            if item["product_id"] == p.id:
+                                item["quantidade"] = int(nova_qtd)
+                                break
                         else:
-                            for item in novo_cart:
-                                if item["product_id"] == p.id:
-                                    item["quantidade"] = int(nova_qtd)
-                                    break
+                            novo_cart.append({
+                                "product_id": p.id,
+                                "codigo": p.codigo,
+                                "nome": p.nome,
+                                "quantidade": int(nova_qtd),
+                                "preco_venda": p.preco_venda,
+                                "preco_custo": p.preco_custo,
+                            })
+                    st.session_state.cart_items = novo_cart
+                    if user_id is not None:
+                        existente = db.query(UserCartItem).filter(
+                            UserCartItem.user_id == user_id,
+                            UserCartItem.product_id == p.id,
+                        ).first()
+                        if nova_qtd <= 0:
+                            if existente:
+                                db.delete(existente)
+                        else:
+                            if existente:
+                                existente.quantity = int(nova_qtd)
                             else:
-                                novo_cart.append({
-                                    "product_id": p.id,
-                                    "codigo": p.codigo,
-                                    "nome": p.nome,
-                                    "quantidade": int(nova_qtd),
-                                    "preco_venda": p.preco_venda,
-                                    "preco_custo": p.preco_custo,
-                                })
-                        st.session_state.cart_items = novo_cart
-                        st.rerun()
-
-    st.markdown("---")
-    if st.button("Voltar para vendas", type="primary", key="btn_voltar_footer"):
-        st.switch_page("pages/4_Vendas.py")
+                                db.add(UserCartItem(
+                                    user_id=user_id,
+                                    product_id=p.id,
+                                    quantity=int(nova_qtd),
+                                ))
+                        db.commit()
+                    st.rerun()
+            with row[1]:
+                img_path = None
+                if p.imagem_path:
+                    candidate = uploads_dir / p.imagem_path
+                    if candidate.exists():
+                        img_path = candidate
+                if img_path:
+                    st.image(str(img_path), width=70)
+                else:
+                    st.markdown(
+                        "<div style='width:70px;height:50px;background:#eee;border-radius:4px;"
+                        "display:flex;align-items:center;justify-content:center;font-size:9px;color:#999;'>"
+                        "Sem imagem</div>",
+                        unsafe_allow_html=True,
+                    )
+            with row[2]:
+                st.markdown(f"**{p.codigo}**")
+            with row[3]:
+                nome_safe = (p.nome or "").replace("<", "&lt;").replace(">", "&gt;")
+                st.markdown(nome_safe)
+            with row[4]:
+                st.markdown(p.categoria or "—")
+            with row[5]:
+                estoque = p.estoque_atual if p.estoque_atual is not None else 0
+                estoque_str = f"{estoque:.0f}" if estoque == int(estoque) else f"{estoque:.2f}"
+                st.markdown(estoque_str)
+            st.markdown("---")
 
 finally:
     db.close()

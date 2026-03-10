@@ -13,12 +13,13 @@ from config.database import SessionLocal
 from models.cash_session import CashSession
 from models.product import Product
 from models.sale import Sale, SaleItem
+from models.user_cart import UserCartItem
 from services.auth_service import AuthService
 from utils.formatters import format_currency
 from utils.navigation import show_sidebar
 
 
-st.set_page_config(page_title="Vendas", page_icon="🧾", layout="wide")
+st.set_page_config(page_title="Vendas", page_icon=":material/receipt_long:", layout="wide")
 
 
 AuthService.require_roles(["admin", "gerente", "vendedor"])
@@ -63,35 +64,27 @@ try:
         else "••••••"
     )
 
-    col_titulo, col_total = st.columns([1, 1])
-    with col_titulo:
+    # Total do dia + botão (topo removido para ganhar espaço)
+    st.markdown(
+        "<style>div:has(#total-dia-toggle-wrap) + div button { font-size: 0.7rem !important; "
+        "padding: 0.15rem 0.4rem !important; min-height: 1.5rem !important; line-height: 1.2 !important; }</style>"
+        "<div id='total-dia-toggle-wrap' style='display:none'></div>",
+        unsafe_allow_html=True,
+    )
+    c_val, c_btn = st.columns([5, 1])
+    with c_val:
         st.markdown(
-            "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>🧾 Vendas (PDV)</strong></p>"
-            "<p style='margin:0; font-size:0.8rem; color:#666;'>Adicione os produtos à sacola e finalize a venda. Caixa precisa estar aberto.</p>",
+            f"<p style='margin:0; text-align:right; font-size:1rem;'><strong>{valor_visivel}</strong></p>",
             unsafe_allow_html=True,
         )
-    with col_total:
-        # Valor + botão ícone na mesma linha; CSS para botão menor
-        st.markdown(
-            "<style>div:has(#total-dia-toggle-wrap) + div button { font-size: 0.7rem !important; "
-            "padding: 0.15rem 0.4rem !important; min-height: 1.5rem !important; line-height: 1.2 !important; }</style>"
-            "<div id='total-dia-toggle-wrap' style='display:none'></div>",
-            unsafe_allow_html=True,
-        )
-        c_val, c_btn = st.columns([5, 1])
-        with c_val:
-            st.markdown(
-                f"<p style='margin:0; text-align:right; font-size:1rem;'><strong>{valor_visivel}</strong></p>",
-                unsafe_allow_html=True,
-            )
-        with c_btn:
-            if st.button(
-                "\u25CB" if not st.session_state.show_total_dia else "\u25CF",  # ○ / ●
-                key="toggle_total_dia",
-                help="Mostrar ou ocultar valor",
-            ):
-                st.session_state.show_total_dia = not st.session_state.show_total_dia
-                st.rerun()
+    with c_btn:
+        if st.button(
+            "\u25CB" if not st.session_state.show_total_dia else "\u25CF",  # ○ / ●
+            key="toggle_total_dia",
+            help="Mostrar ou ocultar valor",
+        ):
+            st.session_state.show_total_dia = not st.session_state.show_total_dia
+            st.rerun()
 
     st.markdown("---")
 
@@ -208,6 +201,10 @@ try:
                                     lucro_item=lucro_item,
                                 )
                             )
+                        user = AuthService.get_current_user()
+                        user_id = user.get("id") if user else None
+                        if user_id is not None:
+                            db.query(UserCartItem).filter(UserCartItem.user_id == user_id).delete()
                         db.commit()
                         st.session_state.cart_items = []
                         st.session_state.pop("confirmar_venda", None)
@@ -232,6 +229,11 @@ try:
                     if st.button("Limpar sacola", use_container_width=True):
                         st.session_state.cart_items = []
                         st.session_state.need_reset_qty_inputs = True
+                        user = AuthService.get_current_user()
+                        user_id = user.get("id") if user else None
+                        if user_id is not None:
+                            db.query(UserCartItem).filter(UserCartItem.user_id == user_id).delete()
+                            db.commit()
                         st.rerun()
 
     # Registros de vendas da sessão de caixa aberta + edição

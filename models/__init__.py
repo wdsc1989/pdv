@@ -11,3 +11,4 @@ from .ai_config import AIConfig  # noqa: F401
 from .agent_prompt import AgentPrompt  # noqa: F401
 from .agent_chat_memory import AgentChatMessage  # noqa: F401
 from .personal_agenda import PersonalAgenda  # noqa: F401
+from .user_cart import UserCartItem  # noqa: F401
