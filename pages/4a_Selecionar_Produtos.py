@@ -100,21 +100,18 @@ try:
             options=["Todas"] + categorias,
             key="filtro_cat_sel",
         )
-
     with col_forn:
         filtro_marca = st.selectbox(
             "Fornecedor",
             options=["Todas"] + marcas,
             key="filtro_marca_sel",
         )
-
     with col_estoque:
         filtro_estoque = st.selectbox(
             "Estoque",
             options=["Todos", "Com estoque", "Sem estoque"],
             key="filtro_estoque_sel",
         )
-
     with col_ordem:
         ordem = st.selectbox(
             "Ordenar por",
@@ -122,7 +119,7 @@ try:
             key="ordem_sel",
         )
 
-    # Linha 2: Busca — lista atualiza ao pressionar Enter ou após 2 s de pausa na digitação
+    # Linha 2: Busca — digite e pressione Enter para filtrar (padrão Streamlit)
     termo = st.text_input(
         "Buscar",
         placeholder="Pesquisar...",
@@ -130,71 +127,7 @@ try:
     )
     termo = (termo or "").strip().lower()
 
-    # Debounce + Enter aplicam o filtro; loop mantém foco na caixa após cada rerun
-    _busca_debounce_js = """
-    <div id="busca-debounce-helper"></div>
-    <script>
-    (function() {
-        var DELAY_MS = 500;
-        var REFOCUS_KEY = "pdv_refocus_busca";
-        var PLACEHOLDER_PART = "Pesquisar";
-        function findBuscaInput() {
-            var inputs = document.querySelectorAll('input[placeholder*="' + PLACEHOLDER_PART + '"]');
-            return inputs.length > 0 ? inputs[0] : null;
-        }
-        function startRefocusLoop() {
-            if (sessionStorage.getItem(REFOCUS_KEY) !== "1") return;
-            var count = 0;
-            var maxTicks = 6000;
-            var iv = setInterval(function() {
-                count++;
-                if (count > maxTicks) {
-                    clearInterval(iv);
-                    sessionStorage.removeItem(REFOCUS_KEY);
-                    return;
-                }
-                var el = findBuscaInput();
-                if (el && document.activeElement !== el) el.focus();
-            }, 50);
-        }
-        function attachDebounce() {
-            var input = findBuscaInput();
-            if (!input) return;
-            if (input._buscaDebounceAttached) return;
-            input._buscaDebounceAttached = true;
-            var timeout;
-            input.addEventListener("input", function() {
-                clearTimeout(timeout);
-                timeout = setTimeout(function() {
-                    sessionStorage.setItem(REFOCUS_KEY, "1");
-                    input.blur();
-                    var e = new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true });
-                    input.dispatchEvent(e);
-                }, DELAY_MS);
-            });
-            input.addEventListener("keydown", function(ev) {
-                if (ev.key === "Enter") sessionStorage.setItem(REFOCUS_KEY, "1");
-            });
-        }
-        function init() {
-            if (sessionStorage.getItem(REFOCUS_KEY) === "1") startRefocusLoop();
-            attachDebounce();
-        }
-        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
-        else init();
-        setTimeout(init, 200);
-        setTimeout(init, 500);
-        setTimeout(init, 1000);
-        setTimeout(init, 2000);
-    })();
-    </script>
-    """
-    try:
-        st.html(_busca_debounce_js, unsafe_allow_javascript=True)
-    except (AttributeError, TypeError):
-        pass  # Streamlit antigo sem st.html: use Enter para filtrar
-
-    # Voltar para vendas (abaixo da pesquisa, largura fixa — não responsivo)
+    # Voltar para vendas (abaixo da pesquisa)
     if st.button("Voltar para vendas", type="primary", key="btn_voltar_vendas", use_container_width=False):
         st.switch_page("pages/4_Vendas.py")
 
@@ -253,7 +186,6 @@ try:
             unsafe_allow_html=True,
         )
         uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
-        # Cabeçalho da tabela: Quantidade, Imagem, Código, Nome, Categoria, Estoque
         w = [0.1, 0.12, 0.12, 0.35, 0.2, 0.11]
         h_cols = st.columns(w)
         with h_cols[0]:
@@ -319,7 +251,7 @@ try:
                                     product_id=p.id,
                                     quantity=int(nova_qtd),
                                 ))
-                        db.commit()
+                            db.commit()
                     st.rerun()
             with row[1]:
                 img_path = None

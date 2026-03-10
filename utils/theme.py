@@ -32,18 +32,29 @@ h1, h2, h3, .stMarkdown p, [data-testid="stMarkdownContainer"] p {
   font-family: 'Montserrat', sans-serif !important;
   color: var(--vc-preto) !important;
 }
-/* Botão primário no estilo da marca */
+/* Botões: fundo claro e texto escuro para boa leitura */
 .stButton > button[kind="primary"], .stButton > button[data-testid="baseButton-primary"] {
-  background: var(--vc-preto-suave) !important;
-  color: #fff !important;
+  background: var(--vc-dourado) !important;
+  color: var(--vc-preto) !important;
   font-family: 'Montserrat', sans-serif !important;
   font-weight: 600 !important;
-  border: none !important;
+  border: 1px solid var(--vc-dourado-escuro) !important;
   border-radius: 8px !important;
 }
-.stButton > button[kind="primary"]:hover {
-  background: var(--vc-preto) !important;
+.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="baseButton-primary"]:hover {
+  background: var(--vc-dourado-escuro) !important;
   color: #fff !important;
+  border-color: var(--vc-preto-suave) !important;
+}
+/* Botões secundários: contorno visível e texto legível */
+.stButton > button:not([kind="primary"]):not([data-testid="baseButton-primary"]) {
+  color: var(--vc-preto-suave) !important;
+  background: #fff !important;
+  border: 1px solid var(--vc-dourado-escuro) !important;
+}
+.stButton > button:not([kind="primary"]):hover {
+  background: var(--vc-rosa) !important;
+  color: var(--vc-preto) !important;
 }
 /* Inputs */
 .stTextInput input, .stTextInput label {

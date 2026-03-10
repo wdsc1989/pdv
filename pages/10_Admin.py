@@ -39,13 +39,6 @@ st.set_page_config(page_title="Administração", page_icon="⚙️", layout="wid
 AuthService.require_roles(["admin"])
 show_sidebar()
 
-st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>⚙️ Administração</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>Crie e gerencie usuários. Perfis: admin, gerente ou vendedor.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
-
 db = SessionLocal()
 
 try:

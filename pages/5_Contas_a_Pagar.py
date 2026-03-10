@@ -52,15 +52,6 @@ show_sidebar()
 user = AuthService.get_current_user()
 current_user_id = user.get("id") if user else None
 
-st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>📄 Contas a Pagar e Contas a Receber</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>"
-    "Cadastre contas a pagar (fornecedores) e contas a receber (vendas fiado). "
-    "Ambos são alertados no resumo diário do Agente de Relatórios.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
-
 db = SessionLocal()
 
 # Query params ou session_state: direcionamento a partir da Análise do dia (links ou botões)

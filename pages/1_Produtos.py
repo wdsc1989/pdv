@@ -77,13 +77,6 @@ show_sidebar()
 user = AuthService.get_current_user()
 role = user["role"] if user else None
 
-st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>📦 Produtos</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>Busque, cadastre e edite produtos. Registre entradas de estoque para acompanhamento por período.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
-
 db = SessionLocal()
 
 try:

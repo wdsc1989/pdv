@@ -27,14 +27,6 @@ st.set_page_config(page_title="Relatórios", page_icon="📈", layout="wide")
 AuthService.require_roles(["admin", "gerente"])
 show_sidebar()
 
-st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>📈 Relatórios</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>Escolha o relatório no menu. Filtros de período aplicam-se aos relatórios que usam datas.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
-
-
 def get_period(tipo: str) -> tuple[date, date]:
     hoje = date.today()
     if tipo == "Diário":

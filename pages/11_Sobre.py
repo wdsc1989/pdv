@@ -18,10 +18,6 @@ if not AuthService.is_authenticated():
     st.stop()
 show_sidebar()
 
-st.markdown("# ℹ️ Sobre")
-st.caption("O que o PDV oferece e como começar.")
-st.markdown("---")
-
 st.markdown("### O que o sistema oferece")
 
 st.markdown("#### 💰 Caixa")

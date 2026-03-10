@@ -26,16 +26,6 @@ show_sidebar()
 user = AuthService.get_current_user()
 current_user_id = user.get("id") if user else None
 
-st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>📅 Agenda Pessoal (Admin)</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>"
-    "Cadastre compromissos pessoais (somente administradores). "
-    "Os compromissos de hoje e dos próximos 7 dias aparecerão como alertas no resumo diário do Agente de Relatórios."
-    "</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
-
 init_db()
 db = SessionLocal()
 

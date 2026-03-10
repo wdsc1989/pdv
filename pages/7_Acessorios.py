@@ -28,13 +28,6 @@ show_sidebar()
 # Garante que as tabelas de acessórios existam (ex.: app iniciado antes da migração)
 init_db()
 
-st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>💎 Acessórios</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>Vendas e ajuste de estoque por preço. Controle: quantidade de peças por valor.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
-
 db = SessionLocal()
 
 try:
@@ -217,6 +210,80 @@ try:
                     st.success("Repasse atualizado.")
                     st.rerun()
 
+            st.markdown("**Editar ou excluir venda**")
+            st.caption("Selecione uma venda para alterar dados ou excluir do histórico.")
+            escolha_edit_v = st.selectbox(
+                "Venda a editar ou excluir",
+                options=opcoes_repasse,
+                index=0,
+                key="select_edit_venda",
+            )
+            idx_edit_v = opcoes_repasse.index(escolha_edit_v)
+            venda_edit_id = ids_vendas_ac[idx_edit_v]
+            venda_edit_obj = db.get(AccessorySale, venda_edit_id)
+            col_ed_v, col_ex_v = st.columns(2)
+            with col_ed_v:
+                if st.button("Editar esta venda", key="btn_editar_venda"):
+                    st.session_state["acess_editar_venda_id"] = venda_edit_id
+                    st.rerun()
+            with col_ex_v:
+                if st.button("Excluir esta venda", type="secondary", key="btn_excluir_venda"):
+                    st.session_state["acess_confirmar_excluir_venda_id"] = venda_edit_id
+                    st.rerun()
+
+        # Formulário de edição de venda (fora do else para não depender de vendas_ac no rerun)
+        if st.session_state.get("acess_editar_venda_id"):
+            st.markdown("---")
+            vid = st.session_state["acess_editar_venda_id"]
+            v_edit = db.get(AccessorySale, vid)
+            if v_edit:
+                st.markdown("**Editar venda**")
+                with st.form("form_editar_venda_acess"):
+                    data_edit = st.date_input("Data da venda", value=v_edit.data_venda, key="edit_v_data")
+                    preco_edit = st.number_input("Preço (R$)", min_value=0.01, value=float(v_edit.preco), step=0.5, format="%.2f", key="edit_v_preco")
+                    qtd_edit = st.number_input("Quantidade", min_value=0.0, value=float(v_edit.quantidade), step=1.0, key="edit_v_qtd")
+                    repasse_edit = st.checkbox("Repasse ao fornecedor feito", value=bool(getattr(v_edit, "repasse_feito", False)), key="edit_v_repasse")
+                    col_sv, col_cv = st.columns(2)
+                    with col_sv:
+                        subm = st.form_submit_button("Salvar")
+                    with col_cv:
+                        canc = st.form_submit_button("Cancelar")
+                    if subm:
+                        v_edit.data_venda = data_edit
+                        v_edit.preco = preco_edit
+                        v_edit.quantidade = qtd_edit
+                        v_edit.repasse_feito = repasse_edit
+                        db.commit()
+                        st.session_state.pop("acess_editar_venda_id", None)
+                        st.success("Venda atualizada.")
+                        st.rerun()
+                    if canc:
+                        st.session_state.pop("acess_editar_venda_id", None)
+                        st.rerun()
+
+        # Confirmação de exclusão de venda
+        if st.session_state.get("acess_confirmar_excluir_venda_id"):
+            st.markdown("---")
+            eid = st.session_state["acess_confirmar_excluir_venda_id"]
+            v_del = db.get(AccessorySale, eid)
+            if v_del:
+                st.warning(f"Excluir venda de {v_del.data_venda.strftime('%d/%m/%Y')} — {format_currency(v_del.preco)} — {v_del.quantidade:.0f} un? Esta ação não pode ser desfeita.")
+                col_ok, col_can = st.columns(2)
+                with col_ok:
+                    if st.button("Sim, excluir venda", type="primary", key="confirm_excluir_venda"):
+                        db.delete(v_del)
+                        db.commit()
+                        st.session_state.pop("acess_confirmar_excluir_venda_id", None)
+                        st.success("Venda excluída.")
+                        st.rerun()
+                with col_can:
+                    if st.button("Cancelar", key="cancel_excluir_venda"):
+                        st.session_state.pop("acess_confirmar_excluir_venda_id", None)
+                        st.rerun()
+            else:
+                st.session_state.pop("acess_confirmar_excluir_venda_id", None)
+                st.rerun()
+
     with tab_ajuste:
         st.subheader("Ajuste de estoque")
         st.caption("Adicione um novo preço com quantidade ou ajuste a quantidade de um preço existente.")
@@ -276,6 +343,23 @@ try:
                         db.commit()
                         st.success(f"Estoque atualizado: {novo_total:.0f} peças a {format_currency(row_aj.preco)}.")
                         st.rerun()
+
+            st.markdown("**Editar ou excluir linha de estoque**")
+            st.caption("Altere preço/quantidade ou remova um preço do estoque.")
+            opcoes_edit_est = [f"{format_currency(r.preco)} — {r.quantidade:.0f} peças" for r in estoque_ajuste]
+            escolha_edit_est = st.selectbox("Linha a editar ou excluir", options=opcoes_edit_est, key="select_edit_estoque")
+            idx_edit_est = opcoes_edit_est.index(escolha_edit_est)
+            row_edit_est = estoque_ajuste[idx_edit_est]
+            col_ed_est, col_ex_est = st.columns(2)
+            with col_ed_est:
+                if st.button("Editar esta linha", key="btn_editar_estoque"):
+                    st.session_state["acess_editar_estoque_id"] = row_edit_est.id
+                    st.rerun()
+            with col_ex_est:
+                if st.button("Excluir esta linha", type="secondary", key="btn_excluir_estoque"):
+                    st.session_state["acess_confirmar_excluir_estoque_id"] = row_edit_est.id
+                    st.rerun()
+
         else:
             novo_preco = st.number_input(
                 "Preço (R$)",
@@ -327,6 +411,63 @@ try:
                         db.commit()
                         st.success(f"Novo preço cadastrado: {nova_qtd:.0f} peças a {format_currency(novo_preco)}.")
                     st.rerun()
+
+        # Formulário de edição de linha de estoque (tab Ajuste)
+        if st.session_state.get("acess_editar_estoque_id"):
+            st.markdown("---")
+            eid = st.session_state["acess_editar_estoque_id"]
+            row_est = db.get(AccessoryStock, eid)
+            if row_est:
+                st.markdown("**Editar linha de estoque**")
+                with st.form("form_editar_estoque_acess"):
+                    preco_est = st.number_input("Preço (R$)", min_value=0.01, value=float(row_est.preco), step=0.5, format="%.2f", key="edit_est_preco")
+                    qtd_est = st.number_input("Quantidade", min_value=0.0, value=float(row_est.quantidade), step=1.0, key="edit_est_qtd")
+                    col_sv2, col_cv2 = st.columns(2)
+                    with col_sv2:
+                        subm2 = st.form_submit_button("Salvar")
+                    with col_cv2:
+                        canc2 = st.form_submit_button("Cancelar")
+                    if subm2:
+                        outro = db.query(AccessoryStock).filter(AccessoryStock.preco == preco_est, AccessoryStock.id != row_est.id).first()
+                        if outro:
+                            outro.quantidade += qtd_est
+                            db.delete(row_est)
+                            db.commit()
+                            st.session_state.pop("acess_editar_estoque_id", None)
+                            st.success(f"Preço unificado com linha existente. Total: {outro.quantidade:.0f} peças.")
+                        else:
+                            row_est.preco = preco_est
+                            row_est.quantidade = qtd_est
+                            db.commit()
+                            st.session_state.pop("acess_editar_estoque_id", None)
+                            st.success("Linha de estoque atualizada.")
+                        st.rerun()
+                    if canc2:
+                        st.session_state.pop("acess_editar_estoque_id", None)
+                        st.rerun()
+
+        # Confirmação de exclusão de linha de estoque
+        if st.session_state.get("acess_confirmar_excluir_estoque_id"):
+            st.markdown("---")
+            eid = st.session_state["acess_confirmar_excluir_estoque_id"]
+            row_del = db.get(AccessoryStock, eid)
+            if row_del:
+                st.warning(f"Excluir estoque de {format_currency(row_del.preco)} — {row_del.quantidade:.0f} peças? O registro será removido.")
+                col_ok2, col_can2 = st.columns(2)
+                with col_ok2:
+                    if st.button("Sim, excluir linha", type="primary", key="confirm_excluir_estoque"):
+                        db.delete(row_del)
+                        db.commit()
+                        st.session_state.pop("acess_confirmar_excluir_estoque_id", None)
+                        st.success("Linha de estoque excluída.")
+                        st.rerun()
+                with col_can2:
+                    if st.button("Cancelar", key="cancel_excluir_estoque"):
+                        st.session_state.pop("acess_confirmar_excluir_estoque_id", None)
+                        st.rerun()
+            else:
+                st.session_state.pop("acess_confirmar_excluir_estoque_id", None)
+                st.rerun()
 
         st.markdown("---")
         st.subheader("Entradas no período")
@@ -396,6 +537,79 @@ try:
                 f"Valor total: {format_currency(total_valor_ent)}"
             )
             st.text(total_ent_txt)
+
+            st.markdown("**Editar ou excluir entrada**")
+            st.caption("Selecione uma entrada do período para alterar ou excluir.")
+            opcoes_ent = [
+                f"{e.data_entrada.strftime('%d/%m/%Y')} — {format_currency(e.preco)} — {e.quantidade:.0f} peças"
+                for e in entradas_ac
+            ]
+            escolha_ent = st.selectbox("Entrada a editar ou excluir", options=opcoes_ent, key="select_edit_entrada")
+            idx_ent = opcoes_ent.index(escolha_ent)
+            entrada_sel = entradas_ac[idx_ent]
+            col_ed_ent, col_ex_ent = st.columns(2)
+            with col_ed_ent:
+                if st.button("Editar esta entrada", key="btn_editar_entrada"):
+                    st.session_state["acess_editar_entrada_id"] = entrada_sel.id
+                    st.rerun()
+            with col_ex_ent:
+                if st.button("Excluir esta entrada", type="secondary", key="btn_excluir_entrada"):
+                    st.session_state["acess_confirmar_excluir_entrada_id"] = entrada_sel.id
+                    st.rerun()
+
+        # Formulário de edição de entrada (tab Ajuste)
+        if st.session_state.get("acess_editar_entrada_id"):
+            st.markdown("---")
+            ent_id = st.session_state["acess_editar_entrada_id"]
+            ent_edit = db.get(AccessoryStockEntry, ent_id)
+            if ent_edit:
+                st.markdown("**Editar entrada**")
+                with st.form("form_editar_entrada_acess"):
+                    data_ent = st.date_input("Data da entrada", value=ent_edit.data_entrada, key="edit_ent_data")
+                    preco_ent = st.number_input("Preço (R$)", min_value=0.01, value=float(ent_edit.preco), step=0.5, format="%.2f", key="edit_ent_preco")
+                    qtd_ent = st.number_input("Quantidade", min_value=0.0, value=float(ent_edit.quantidade), step=1.0, key="edit_ent_qtd")
+                    col_sv3, col_cv3 = st.columns(2)
+                    with col_sv3:
+                        subm3 = st.form_submit_button("Salvar")
+                    with col_cv3:
+                        canc3 = st.form_submit_button("Cancelar")
+                    if subm3:
+                        ent_edit.data_entrada = data_ent
+                        ent_edit.preco = preco_ent
+                        ent_edit.quantidade = qtd_ent
+                        db.commit()
+                        st.session_state.pop("acess_editar_entrada_id", None)
+                        st.success("Entrada atualizada.")
+                        st.rerun()
+                    if canc3:
+                        st.session_state.pop("acess_editar_entrada_id", None)
+                        st.rerun()
+
+        # Confirmação de exclusão de entrada
+        if st.session_state.get("acess_confirmar_excluir_entrada_id"):
+            st.markdown("---")
+            ent_id = st.session_state["acess_confirmar_excluir_entrada_id"]
+            ent_del = db.get(AccessoryStockEntry, ent_id)
+            if ent_del:
+                st.warning(
+                    f"Excluir entrada de {ent_del.data_entrada.strftime('%d/%m/%Y')} — "
+                    f"{format_currency(ent_del.preco)} — {ent_del.quantidade:.0f} peças? O registro será removido (o estoque atual não é alterado)."
+                )
+                col_ok3, col_can3 = st.columns(2)
+                with col_ok3:
+                    if st.button("Sim, excluir entrada", type="primary", key="confirm_excluir_entrada"):
+                        db.delete(ent_del)
+                        db.commit()
+                        st.session_state.pop("acess_confirmar_excluir_entrada_id", None)
+                        st.success("Entrada excluída.")
+                        st.rerun()
+                with col_can3:
+                    if st.button("Cancelar", key="cancel_excluir_entrada"):
+                        st.session_state.pop("acess_confirmar_excluir_entrada_id", None)
+                        st.rerun()
+            else:
+                st.session_state.pop("acess_confirmar_excluir_entrada_id", None)
+                st.rerun()
 
 finally:
     db.close()

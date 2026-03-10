@@ -19,13 +19,6 @@ st.set_page_config(page_title="Categorias", page_icon="🗂️", layout="wide")
 AuthService.require_roles(["admin", "gerente"])
 show_sidebar()
 
-st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>🗂️ Categorias de Produto</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>Cadastre e gerencie categorias dos produtos.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
-
 db = SessionLocal()
 
 try:

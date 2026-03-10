@@ -25,13 +25,6 @@ show_sidebar()
 user = AuthService.get_current_user()
 role = user["role"] if user else None
 
-st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>💰 Caixa</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>Abra o caixa no início do dia e feche ao encerrar. Vendas vinculadas à sessão.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
-
 db = SessionLocal()
 
 try:

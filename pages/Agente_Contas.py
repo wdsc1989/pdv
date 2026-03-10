@@ -41,13 +41,6 @@ AuthService.require_roles(["admin", "gerente"])
 show_sidebar()
 
 st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>📋 Agente de Cadastro de Contas</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>"
-    "Cadastre contas a pagar e a receber em linguagem natural. O agente pergunta o que faltar e confirma antes de inserir."
-    "</p>",
-    unsafe_allow_html=True,
-)
-st.markdown(
     "**Exemplos:** "
     "\"Cadastre conta de energia no valor de 120 para o dia 10/02/2026\", "
     "\"Para o cliente Maria, 50 reais a receber em 05/02/2026\", "

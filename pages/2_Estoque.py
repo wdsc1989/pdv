@@ -21,13 +21,6 @@ st.set_page_config(page_title="Estoque", page_icon="📊", layout="wide")
 AuthService.require_auth()
 show_sidebar()
 
-st.markdown(
-    "<p style='margin:0 0 0.25rem 0; font-size:1.25rem;'><strong>📊 Estoque</strong></p>"
-    "<p style='margin:0; font-size:0.8rem; color:#666;'>Quantidades em estoque. Abaixo do mínimo em destaque.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
-
 db = SessionLocal()
 
 try:
